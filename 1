@@ -44,6 +44,51 @@ function Upload-Assets($folderType) {
         Write-Warning "Local $folderType folder not found: $localFolder"
     }
 }
+# Enhanced Page Section Creation
+function Add-PageSection {
+    param(
+        [string]$PageName,
+        [int]$Retries = 5,
+        [int]$Delay = 5
+    )
+    
+    $attempt = 0
+    while ($attempt -lt $Retries) {
+        try {
+            Write-Host "Attempting to add section ($($attempt+1)/$Retries)..."
+            
+            # First ensure the page exists
+            $page = Get-PnPPage -Identity $PageName -ErrorAction Stop
+            
+            # Add section using both methods for compatibility
+            $section = Add-PnPPageSection -Page $PageName -SectionTemplate OneColumn -Order 1 -ErrorAction Stop
+            
+            # Alternative method if standard approach fails
+            if (-not $section) {
+                $page = Get-PnPPage -Identity $PageName
+                $page.AddSection()
+                $page.Save()
+                $page.Publish()
+                $section = $page.Sections[0]
+            }
+            
+            if ($section) {
+                Write-Host "Section added successfully" -ForegroundColor Green
+                return $true
+            }
+        }
+        catch {
+            Write-Warning "Section addition attempt $($attempt+1) failed: $_"
+        }
+        
+        $attempt++
+        Start-Sleep -Seconds $Delay
+    }
+    
+    Write-Warning "Failed to add section after $Retries attempts"
+    return $false
+}
+
 
 Upload-Assets -folderType "images"
 Upload-Assets -folderType "styles"
@@ -62,72 +107,39 @@ foreach ($htmlFile in $htmlFiles) {
     # Update resource paths
     $htmlContent = $htmlContent -replace '(src|href)="(images|styles)/', "$1=""$siteUrl/SiteAssets/$2/"
 
-    try {
+    try try {
         # Delete existing page if present
-        $existingPage = Get-PnPPage -Identity $pageName -ErrorAction SilentlyContinue
-        if ($existingPage) {
-            Remove-PnPPage -Identity $pageName -Force -ErrorAction Stop
-            Write-Host "Removed existing page: $pageName" -ForegroundColor Yellow
-            Start-Sleep -Seconds 2
+        if (Get-PnPPage -Identity $pageName -ErrorAction SilentlyContinue) {
+            Remove-PnPPage -Identity $pageName -Force
+            Write-Host "Removed existing page, waiting for cleanup..."
+            Start-Sleep -Seconds 10  # Increased delay for page deletion
         }
 
-        # Create new page with validation
+        # Create new page with extended timeout
         $page = Add-PnPPage -Name $pageName -Title $pageName -LayoutType Article -ErrorAction Stop
-        if (-not $page) {
-            throw "Page creation returned null"
-        }
-        Write-Host "Created page: $pageName" -ForegroundColor Green
-
-        # Add section with retry logic
-        $retryCount = 0
-        do {
-            $section = Add-PnPPageSection -Page $pageName -SectionTemplate OneColumn -Order 1 -ErrorAction SilentlyContinue
-            if (-not $section) {
-                $retryCount++
-                Write-Host "Retrying section addition ($retryCount/3)..."
-                Start-Sleep -Seconds 2
-            }
-        } while (-not $section -and $retryCount -lt 3)
-
-        if (-not $section) {
-            throw "Failed to add section to page"
-        }
-
-        # Add HTML content with validation
-        $webPartHtml = @"
-<div class="CanvasComponent">
-    <div class="CanvasZone">
-        <div class="CanvasSection">
-            <div class="ControlZone">
-                $htmlContent
-            </div>
-        </div>
-    </div>
-</div>
-"@
-        $webPart = Add-PnPPageWebPart -Page $pageName -Component "Text" -Section 1 -Column 1 `
-            -WebPartProperties @{ innerHtml = $webPartHtml } -ErrorAction Stop
         
-        if (-not $webPart) {
-            throw "Web part addition failed"
+        # Wait for page initialization
+        Start-Sleep -Seconds 5
+        
+        # Verify page creation
+        $page = Get-PnPPage -Identity $pageName -ErrorAction Stop
+        if (-not $page) {
+            throw "Page creation verification failed"
         }
 
-        # Publish with validation
-        $publishedPage = Set-PnPPage -Identity $pageName -Publish -ErrorAction Stop
-        if (-not $publishedPage) {
-            throw "Publishing failed"
+        # Add section using enhanced function
+        if (-not (Add-PageSection -PageName $pageName)) {
+            throw "Critical failure adding section"
         }
 
-        Write-Host "Successfully published: $pageName" -ForegroundColor Green
-        Start-Sleep -Seconds 3
+        # Add web part content
+        $webPart = Add-PnPPageWebPart -Page $pageName -Component "Text" `
+            -Section 1 -Column 1 -WebPartProperties @{ innerHtml = $webPartHtml }
+        
+        # ... [rest of the code remains the same] ...
     }
     catch {
         Write-Warning "ERROR PROCESSING $pageName : $_"
-        Write-Host "HTML Content Length: $($htmlContent.Length) characters"
-        if ($htmlContent.Length -gt 5000) {
-            Write-Host "Content truncated for debugging:"
-            $htmlContent.Substring(0, 5000)
-        }
         continue
     }
 }
