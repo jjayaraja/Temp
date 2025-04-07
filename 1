@@ -44,7 +44,7 @@ function Upload-Assets($folderType) {
         Write-Warning "Local $folderType folder not found: $localFolder"
     }
 }
-# Enhanced Page Section Creation
+# Revised Section Creation Function
 function Add-PageSection {
     param(
         [string]$PageName,
@@ -56,20 +56,20 @@ function Add-PageSection {
     while ($attempt -lt $Retries) {
         try {
             Write-Host "Attempting to add section ($($attempt+1)/$Retries)..."
-            
-            # First ensure the page exists
+
+            # Get fresh page reference
             $page = Get-PnPPage -Identity $PageName -ErrorAction Stop
             
-            # Add section using both methods for compatibility
+            # First try standard PnP method
             $section = Add-PnPPageSection -Page $PageName -SectionTemplate OneColumn -Order 1 -ErrorAction Stop
             
-            # Alternative method if standard approach fails
+            # If standard method failed, use alternative approach
             if (-not $section) {
-                $page = Get-PnPPage -Identity $PageName
-                $page.AddSection()
+                # Add section using CanvasSectionTemplate
+                $newSection = $page.Sections.AddSection([PnP.Core.Model.Pages.CanvasSectionTemplate]::OneColumn)
                 $page.Save()
                 $page.Publish()
-                $section = $page.Sections[0]
+                $section = $newSection
             }
             
             if ($section) {
@@ -79,6 +79,8 @@ function Add-PageSection {
         }
         catch {
             Write-Warning "Section addition attempt $($attempt+1) failed: $_"
+            # Force page reload
+            $page = Get-PnPPage -Identity $PageName -ErrorAction SilentlyContinue
         }
         
         $attempt++
@@ -107,7 +109,18 @@ foreach ($htmlFile in $htmlFiles) {
     # Update resource paths
     $htmlContent = $htmlContent -replace '(src|href)="(images|styles)/', "$1=""$siteUrl/SiteAssets/$2/"
 
-    try try {
+    try {
+
+
+    # Modern Document Library Checkout Reset
+$files = Get-PnPFile -List $libraryName -Recursive -Includes CheckedOutByUser
+
+$files | Where-Object { $_.CheckedOutByUser } | ForEach-Object {
+    Write-Host "Resetting checkout for: $($_.ServerRelativeUrl)"
+    $_ | Stop-PnPFileVersion -CheckoutType DiscardCheckout -Force
+}
+
+
         # Delete existing page if present
         if (Get-PnPPage -Identity $pageName -ErrorAction SilentlyContinue) {
             Remove-PnPPage -Identity $pageName -Force
