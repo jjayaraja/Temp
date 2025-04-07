@@ -1,6 +1,4 @@
-https://chat.deepseek.com/a/chat/s/3320fa2e-882c-417c-806a-a21d66bbcc1e
-
-# Parameters
+# Migration Script with Enhanced Error Handling
 $siteUrl = "https://contoso.sharepoint.com/sites/yoursite"
 $zipFilePath = "C:\path\to\confluence-export.zip"
 $tempFolder = "C:\temp\ConfluenceExport"
@@ -8,56 +6,95 @@ $imagesLibrary = "SiteAssets/images"
 $stylesLibrary = "SiteAssets/styles"
 
 # Connect to SharePoint
-Connect-PnPOnline -Url $siteUrl -Interactive
+Connect-PnPOnline -Url $siteUrl -Interactive -ErrorAction Stop
 
 # Extract ZIP file
+if (-not (Test-Path $tempFolder)) { New-Item -Path $tempFolder -ItemType Directory }
 Expand-Archive -Path $zipFilePath -DestinationPath $tempFolder -Force
 
-# Create required folders
-Resolve-PnPFolder -SiteRelativePath $imagesLibrary
-Resolve-PnPFolder -SiteRelativePath $stylesLibrary
-
-# Upload assets
-$imagesFolder = Join-Path $tempFolder "images"
-Get-ChildItem $imagesFolder -Recurse | ForEach-Object {
-    $targetPath = $_.FullName.Replace($imagesFolder, $imagesLibrary)
-    Add-PnPFile -Path $_.FullName -Folder $targetPath -ErrorAction SilentlyContinue
+# Ensure asset libraries exist
+try {
+    $null = Resolve-PnPFolder -SiteRelativePath $imagesLibrary -ErrorAction Stop
+    $null = Resolve-PnPFolder -SiteRelativePath $stylesLibrary -ErrorAction Stop
+    Write-Host "Verified asset libraries" -ForegroundColor Cyan
+}
+catch {
+    Write-Warning "Could not create asset libraries: $_"
+    exit
 }
 
-$stylesFolder = Join-Path $tempFolder "styles"
-Get-ChildItem $stylesFolder -Recurse | ForEach-Object {
-    $targetPath = $_.FullName.Replace($stylesFolder, $stylesLibrary)
-    Add-PnPFile -Path $_.FullName -Folder $targetPath -ErrorAction SilentlyContinue
+# Upload assets with validation
+function Upload-Assets($folderType) {
+    $localFolder = Join-Path $tempFolder $folderType
+    $targetLibrary = if ($folderType -eq "images") { $imagesLibrary } else { $stylesLibrary }
+
+    if (Test-Path $localFolder) {
+        Get-ChildItem $localFolder -Recurse | ForEach-Object {
+            try {
+                $targetPath = $_.FullName.Replace($localFolder, $targetLibrary)
+                $file = Add-PnPFile -Path $_.FullName -Folder $targetPath -ErrorAction Stop
+                Write-Host "Uploaded $($file.Name) to $targetPath" -ForegroundColor DarkCyan
+            }
+            catch {
+                Write-Warning "Failed to upload $($_.Name): $_"
+            }
+        }
+    }
+    else {
+        Write-Warning "Local $folderType folder not found: $localFolder"
+    }
 }
 
-# Process HTML files
+Upload-Assets -folderType "images"
+Upload-Assets -folderType "styles"
+
+# HTML Processing and Page Creation
 $htmlFiles = Get-ChildItem -Path $tempFolder -Filter *.html -Recurse
 
 foreach ($htmlFile in $htmlFiles) {
-    $pageName = [System.IO.Path]::GetFileNameWithoutExtension($htmlFile.Name)
+    $pageName = [IO.Path]::GetFileNameWithoutExtension($htmlFile.Name)
     $htmlContent = Get-Content $htmlFile.FullName -Raw
-    
-    # Update paths
-    $htmlContent = $htmlContent -replace 'src="images/', "src=""$siteUrl/$imagesLibrary/"
-    $htmlContent = $htmlContent -replace 'href="styles/', "href=""$siteUrl/$stylesLibrary/"
+
+    # Sanitize page name for SharePoint
+    $pageName = $pageName -replace '[<>:"/\\|?*]', '' -replace '\s+', ' '
+    $pageName = $pageName.Trim().Substring(0, [Math]::Min($pageName.Length, 50))
+
+    # Update resource paths
+    $htmlContent = $htmlContent -replace '(src|href)="(images|styles)/', "$1=""$siteUrl/SiteAssets/$2/"
 
     try {
         # Delete existing page if present
         $existingPage = Get-PnPPage -Identity $pageName -ErrorAction SilentlyContinue
         if ($existingPage) {
-            Remove-PnPPage -Identity $pageName -Force
-            Write-Host "Removed existing page: $pageName"
+            Remove-PnPPage -Identity $pageName -Force -ErrorAction Stop
+            Write-Host "Removed existing page: $pageName" -ForegroundColor Yellow
+            Start-Sleep -Seconds 2
         }
 
-        # Create new page
+        # Create new page with validation
         $page = Add-PnPPage -Name $pageName -Title $pageName -LayoutType Article -ErrorAction Stop
-        Write-Host "Created page: $pageName"
+        if (-not $page) {
+            throw "Page creation returned null"
+        }
+        Write-Host "Created page: $pageName" -ForegroundColor Green
 
-        # Add section
-        Add-PnPPageSection -Page $pageName -SectionTemplate OneColumn -Order 1
-        
-        # Add HTML content with proper wrapper
-        $sharePointHtml = @"
+        # Add section with retry logic
+        $retryCount = 0
+        do {
+            $section = Add-PnPPageSection -Page $pageName -SectionTemplate OneColumn -Order 1 -ErrorAction SilentlyContinue
+            if (-not $section) {
+                $retryCount++
+                Write-Host "Retrying section addition ($retryCount/3)..."
+                Start-Sleep -Seconds 2
+            }
+        } while (-not $section -and $retryCount -lt 3)
+
+        if (-not $section) {
+            throw "Failed to add section to page"
+        }
+
+        # Add HTML content with validation
+        $webPartHtml = @"
 <div class="CanvasComponent">
     <div class="CanvasZone">
         <div class="CanvasSection">
@@ -68,42 +105,58 @@ foreach ($htmlFile in $htmlFiles) {
     </div>
 </div>
 "@
-        Add-PnPPageWebPart -Page $pageName -Component "Text" -Section 1 -Column 1 -WebPartProperties @{
-            "innerHtml" = $sharePointHtml
+        $webPart = Add-PnPPageWebPart -Page $pageName -Component "Text" -Section 1 -Column 1 `
+            -WebPartProperties @{ innerHtml = $webPartHtml } -ErrorAction Stop
+        
+        if (-not $webPart) {
+            throw "Web part addition failed"
         }
 
-        # Publish page
-        Set-PnPPage -Identity $pageName -Publish
-        Write-Host "Published page: $pageName"
-        
-        # Add delay to avoid throttling
-        Start-Sleep -Seconds 2
+        # Publish with validation
+        $publishedPage = Set-PnPPage -Identity $pageName -Publish -ErrorAction Stop
+        if (-not $publishedPage) {
+            throw "Publishing failed"
+        }
+
+        Write-Host "Successfully published: $pageName" -ForegroundColor Green
+        Start-Sleep -Seconds 3
     }
     catch {
-        Write-Warning "Error processing $pageName : $_"
+        Write-Warning "ERROR PROCESSING $pageName : $_"
+        Write-Host "HTML Content Length: $($htmlContent.Length) characters"
+        if ($htmlContent.Length -gt 5000) {
+            Write-Host "Content truncated for debugging:"
+            $htmlContent.Substring(0, 5000)
+        }
         continue
     }
 }
 
-# Navigation setup
-$pages = Get-PnPPage -Folder "SitePages"
-$navigationNodes = @()
-foreach ($page in $pages) {
-    $navigationNodes += @{
-        Title = $page.Title
-        Url   = $page.ServerRelativeUrl
+# Navigation Setup with Validation
+try {
+    $pages = Get-PnPPage -Folder "SitePages" -ErrorAction Stop | Where-Object { $_.Title }
+    if (-not $pages) { throw "No pages found in SitePages library" }
+
+    Write-Host "Building navigation for $($pages.Count) pages..."
+    $navigationNodes = $pages | ForEach-Object {
+        @{
+            Title = $_.Title
+            Url   = $_.ServerRelativeUrl
+        }
     }
+
+    # Clear existing navigation
+    Get-PnPNavigationNode -Location QuickLaunch | Remove-PnPNavigationNode -Force -ErrorAction SilentlyContinue
+
+    # Add new nodes
+    $navigationNodes | ForEach-Object {
+        Add-PnPNavigationNode -Title $_.Title -Url $_.Url -Location QuickLaunch -ErrorAction Stop
+    }
+    Write-Host "Navigation updated successfully" -ForegroundColor Green
 }
-
-# Clear existing navigation
-Get-PnPNavigationNode -Location QuickLaunch | Remove-PnPNavigationNode -Force
-
-# Add new navigation nodes
-foreach ($node in $navigationNodes) {
-    Add-PnPNavigationNode -Title $node.Title -Url $node.Url -Location QuickLaunch
+catch {
+    Write-Warning "Navigation setup failed: $_"
 }
 
 # Cleanup
-Remove-Item -Path $tempFolder -Recurse -Force
-
-Write-Host "Migration completed!" -ForegroundColor Green
+Remove-Item -Path $tempFolder -Recurse -Force -ErrorAction SilentlyContinue
