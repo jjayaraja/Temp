@@ -1,73 +1,96 @@
-function Add-PageSection {
-    param(
-        [string]$PageName,
-        [int]$Retries = 5,
-        [int]$Delay = 5
-    )
-    
-    $attempt = 0
-    while ($attempt -lt $Retries) {
-        try {
-            Write-Host "Attempting to add section ($($attempt+1)/$Retries)..."
-            
-            # Add section using native PnP cmdlet
-            $section = Add-PnPPageSection -Page $PageName `
-                -SectionTemplate OneColumn `
-                -Order 1 `
-                -ErrorAction Stop
+# Confluence to SharePoint Modern Pages Migration Script
+# Based on PnP Script Sample: https://pnp.github.io/script-samples/spo-create-modern-pages-add-web-parts/
 
-            if ($section) {
-                Write-Host "Section added successfully" -ForegroundColor Green
-                return $true
-            }
-        }
-        catch {
-            Write-Warning "Section addition attempt $($attempt+1) failed: $_"
-            # Refresh page reference
-            $page = Get-PnPPage -Identity $PageName -ErrorAction SilentlyContinue
-        }
-        
-        $attempt++
-        Start-Sleep -Seconds $Delay
-    }
+# Configuration Parameters
+$siteUrl = "https://contoso.sharepoint.com/sites/yoursite"
+$zipFilePath = "C:\ConfluenceExport.zip"
+$tempFolder = "C:\ConfluenceExport"
+$imagesLibrary = "SiteAssets/ConfluenceImages"
+$stylesLibrary = "SiteAssets/ConfluenceStyles"
+$pageLibrary = "SitePages"
+
+# Connect to SharePoint
+Connect-PnPOnline -Url $siteUrl -Interactive
+
+# Extract ZIP Archive
+Expand-Archive -Path $zipFilePath -DestinationPath $tempFolder -Force
+
+# Upload Assets
+function Upload-Assets {
+    param($folderType)
+    $localPath = Join-Path $tempFolder $folderType
+    $targetLibrary = if ($folderType -eq "images") { $imagesLibrary } else { $stylesLibrary }
     
-    Write-Warning "Failed to add section after $Retries attempts"
-    return $false
+    Get-ChildItem $localPath -File -Recurse | ForEach-Object {
+        $targetPath = $_.FullName.Replace($localPath, $targetLibrary)
+        Add-PnPFile -Path $_.FullName -Folder $targetPath
+    }
 }
 
+Upload-Assets "images"
+Upload-Assets "styles"
 
+# Process HTML Files
+$htmlFiles = Get-ChildItem -Path $tempFolder -Filter *.html -Recurse
 
-
-# Modified page processing block
 foreach ($htmlFile in $htmlFiles) {
+    $pageName = [System.IO.Path]::GetFileNameWithoutExtension($htmlFile.Name)
+    $pageName = $pageName -replace '[^\w\s-]','' -replace '\s+',' ' -replace '-+','-' -trim
+    
     try {
-        # Page name sanitization (corrected)
-        $pageNameBase = [IO.Path]::GetFileNameWithoutExtension($htmlFile.Name)
-        $pageName = $pageNameBase `
-            -replace '[<>:"/\\|?*]', '' `
-            -replace '\s+', ' ' `
-            | ForEach-Object { $_.Trim() }
-        $pageName = $pageName.Substring(0, [Math]::Min($pageName.Length, 50))
-
-        # Delete existing page
-        if (Get-PnPPage -Identity $pageName -ErrorAction SilentlyContinue) {
-            Remove-PnPPage -Identity $pageName -Force
-            Write-Host "Removed existing page: $pageName" -ForegroundColor Yellow
-            Start-Sleep -Seconds 5
+        # Cleanup existing page
+        $existingPage = Get-PnPClientSidePage -Identity $pageName -ErrorAction SilentlyContinue
+        if ($existingPage) {
+            Remove-PnPClientSidePage -Identity $pageName -Force
         }
 
-        # Create new page
-        $page = Add-PnPPage -Name $pageName -Title $pageName -LayoutType Article -ErrorAction Stop
+        # Create new modern page
+        $page = Add-PnPClientSidePage -Name $pageName -LayoutType Article -Title $pageName
         
-        # Add section with retries
-        if (-not (Add-PageSection -PageName $pageName)) {
-            throw "Failed to add section after multiple attempts"
-        }
-
-        # Rest of the code remains the same...
-        # [HTML processing and web part addition]
+        # Add default section
+        $section = Add-PnPPageSection -Page $page -SectionTemplate OneColumn -Order 1
+        
+        # Process HTML content
+        $htmlContent = Get-Content $htmlFile.FullName -Raw
+        
+        # Update resource paths
+        $htmlContent = $htmlContent -replace 'src="images/', "src=""$siteUrl/$imagesLibrary/"
+        $htmlContent = $htmlContent -replace 'href="styles/', "href=""$siteUrl/$stylesLibrary/"
+        
+        # Add HTML content as text web part
+        $textWebPart = Add-PnPPageWebPart -Page $page -Component "Text" -Section 1 -Column 1
+        Set-PnPClientSideText -Page $page -Text $htmlContent -InstanceId $textWebPart.InstanceId
+        
+        # Add default header image if needed
+        # Set-PnPClientSidePageHeader -Page $page -Type Image -ImageUrl "/sites/yoursite/SiteAssets/header.jpg"
+        
+        # Save and publish
+        $page.Save()
+        $page.Publish()
+        
+        Write-Host "Created page: $pageName" -ForegroundColor Green
     }
     catch {
         Write-Warning "Error processing $pageName : $_"
     }
 }
+
+# Create Navigation
+$pages = Get-PnPListItem -List $pageLibrary -Fields "FileLeafRef","Title"
+$navigationNodes = $pages | ForEach-Object {
+    @{
+        Title = $_.FieldValues.Title
+        Url   = "SitePages/$($_.FieldValues.FileLeafRef)"
+    }
+}
+
+# Clear existing navigation
+Get-PnPNavigationNode -Location QuickLaunch | Remove-PnPNavigationNode -Force
+
+# Add new navigation
+$navigationNodes | ForEach-Object {
+    Add-PnPNavigationNode -Title $_.Title -Url $_.Url -Location QuickLaunch
+}
+
+# Cleanup
+Remove-Item -Path $tempFolder -Recurse -Force
