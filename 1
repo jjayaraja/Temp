@@ -1,50 +1,83 @@
-# Migration Script with Enhanced Error Handling
+<#
+.SYNOPSIS
+Migrates Confluence content to SharePoint Modern Pages with full asset preservation
+
+.REQUIREMENTS
+- PnP.PowerShell Module
+- SharePoint Site Owner Privileges
+- PowerShell 7.0+
+#>
+
+# Parameters
 $siteUrl = "https://contoso.sharepoint.com/sites/yoursite"
-$zipFilePath = "C:\path\to\confluence-export.zip"
-$tempFolder = "C:\temp\ConfluenceExport"
-$imagesLibrary = "SiteAssets/images"
-$stylesLibrary = "SiteAssets/styles"
+$zipFilePath = "C:\ConfluenceExport.zip"
+$tempFolder = "C:\ConfluenceExport"
+$imagesLibrary = "SiteAssets/ConfluenceImages"
+$stylesLibrary = "SiteAssets/ConfluenceStyles"
+$pageLibrary = "SitePages"
+$logFile = "MigrationErrors.log"
+
+# Initialize
+$ErrorActionPreference = "Stop"
+$DebugPreference = "SilentlyContinue"
+$startTime = Get-Date
 
 # Connect to SharePoint
-Connect-PnPOnline -Url $siteUrl -Interactive -ErrorAction Stop
-
-# Extract ZIP file
-if (-not (Test-Path $tempFolder)) { New-Item -Path $tempFolder -ItemType Directory }
-Expand-Archive -Path $zipFilePath -DestinationPath $tempFolder -Force
-
-# Ensure asset libraries exist
 try {
-    $null = Resolve-PnPFolder -SiteRelativePath $imagesLibrary -ErrorAction Stop
-    $null = Resolve-PnPFolder -SiteRelativePath $stylesLibrary -ErrorAction Stop
-    Write-Host "Verified asset libraries" -ForegroundColor Cyan
+    Connect-PnPOnline -Url $siteUrl -Interactive -ErrorAction Stop
+    Write-Host "Connected to SharePoint site: $siteUrl" -ForegroundColor Green
 }
 catch {
-    Write-Warning "Could not create asset libraries: $_"
+    Write-Host "Connection failed: $_" -ForegroundColor Red
     exit
 }
 
-# Upload assets with validation
-function Upload-Assets($folderType) {
-    $localFolder = Join-Path $tempFolder $folderType
-    $targetLibrary = if ($folderType -eq "images") { $imagesLibrary } else { $stylesLibrary }
+# Extract ZIP Archive
+try {
+    if (-not (Test-Path $tempFolder)) { New-Item -Path $tempFolder -ItemType Directory -Force }
+    Expand-Archive -Path $zipFilePath -DestinationPath $tempFolder -Force
+    Write-Host "ZIP archive extracted to: $tempFolder" -ForegroundColor Cyan
+}
+catch {
+    Write-Host "Extraction failed: $_" -ForegroundColor Red
+    exit
+}
 
-    if (Test-Path $localFolder) {
-        Get-ChildItem $localFolder -Recurse | ForEach-Object {
-            try {
-                $targetPath = $_.FullName.Replace($localFolder, $targetLibrary)
-                $file = Add-PnPFile -Path $_.FullName -Folder $targetPath -ErrorAction Stop
-                Write-Host "Uploaded $($file.Name) to $targetPath" -ForegroundColor DarkCyan
-            }
-            catch {
-                Write-Warning "Failed to upload $($_.Name): $_"
-            }
+# Create Asset Folders
+try {
+    Resolve-PnPFolder -SiteRelativePath $imagesLibrary | Out-Null
+    Resolve-PnPFolder -SiteRelativePath $stylesLibrary | Out-Null
+    Write-Host "Created asset libraries" -ForegroundColor Cyan
+}
+catch {
+    Write-Host "Folder creation failed: $_" -ForegroundColor Red
+    exit
+}
+
+# Asset Upload Functions
+function Upload-Assets {
+    param(
+        [string]$LocalPath,
+        [string]$TargetLibrary
+    )
+    
+    Get-ChildItem $LocalPath -Recurse | ForEach-Object {
+        try {
+            $targetPath = $_.FullName.Replace($LocalPath, $TargetLibrary)
+            Add-PnPFile -Path $_.FullName -Folder $targetPath -ErrorAction Stop | Out-Null
+            Write-Host "Uploaded: $($_.Name)" -ForegroundColor DarkCyan
+        }
+        catch {
+            Write-Warning "Failed to upload $($_.Name): $_"
         }
     }
-    else {
-        Write-Warning "Local $folderType folder not found: $localFolder"
-    }
 }
-# Revised Section Creation Function
+
+# Upload Images and Styles
+Upload-Assets -LocalPath (Join-Path $tempFolder "images") -TargetLibrary $imagesLibrary
+Upload-Assets -LocalPath (Join-Path $tempFolder "styles") -TargetLibrary $stylesLibrary
+
+# Page Creation Functions
 function Add-PageSection {
     param(
         [string]$PageName,
@@ -55,124 +88,113 @@ function Add-PageSection {
     $attempt = 0
     while ($attempt -lt $Retries) {
         try {
-            Write-Host "Attempting to add section ($($attempt+1)/$Retries)..."
-
-            # Get fresh page reference
             $page = Get-PnPPage -Identity $PageName -ErrorAction Stop
             
-            # First try standard PnP method
+            # Try standard section addition
             $section = Add-PnPPageSection -Page $PageName -SectionTemplate OneColumn -Order 1 -ErrorAction Stop
             
-            # If standard method failed, use alternative approach
+            # Fallback method if needed
             if (-not $section) {
-                # Add section using CanvasSectionTemplate
-                $newSection = $page.Sections.AddSection([PnP.Core.Model.Pages.CanvasSectionTemplate]::OneColumn)
+                $page.Sections.AddSection([PnP.Core.Model.Pages.CanvasSectionTemplate]::OneColumn) | Out-Null
                 $page.Save()
                 $page.Publish()
-                $section = $newSection
             }
             
-            if ($section) {
-                Write-Host "Section added successfully" -ForegroundColor Green
-                return $true
-            }
+            return $true
         }
         catch {
-            Write-Warning "Section addition attempt $($attempt+1) failed: $_"
-            # Force page reload
-            $page = Get-PnPPage -Identity $PageName -ErrorAction SilentlyContinue
+            Write-Warning "Section attempt $($attempt+1)/$Retries failed: $_"
+            $attempt++
+            Start-Sleep -Seconds $Delay
         }
-        
-        $attempt++
-        Start-Sleep -Seconds $Delay
     }
-    
-    Write-Warning "Failed to add section after $Retries attempts"
     return $false
 }
 
-
-Upload-Assets -folderType "images"
-Upload-Assets -folderType "styles"
-
-# HTML Processing and Page Creation
+# Process HTML Files
 $htmlFiles = Get-ChildItem -Path $tempFolder -Filter *.html -Recurse
 
 foreach ($htmlFile in $htmlFiles) {
-    $pageName = [IO.Path]::GetFileNameWithoutExtension($htmlFile.Name)
-    $htmlContent = Get-Content $htmlFile.FullName -Raw
-
-    # Sanitize page name for SharePoint
-    $pageName = $pageName -replace '[<>:"/\\|?*]', '' -replace '\s+', ' '
-    $pageName = $pageName.Trim().Substring(0, [Math]::Min($pageName.Length, 50))
-
-    # Update resource paths
-    $htmlContent = $htmlContent -replace '(src|href)="(images|styles)/', "$1=""$siteUrl/SiteAssets/$2/"
-
+    $pageNameBase = [IO.Path]::GetFileNameWithoutExtension($htmlFile.Name)
+    
+    # Sanitize page name
+    $pageName = $pageNameBase -replace '[^\w\s-]', '' -replace '\s+', ' ' -trim
+    $pageName = $pageName.Substring(0, [Math]::Min($pageName.Length, 50))
+    
     try {
-
-
-    # Modern Document Library Checkout Reset
-$files = Get-PnPFile -List $libraryName -Recursive -Includes CheckedOutByUser
-
-$files | Where-Object { $_.CheckedOutByUser } | ForEach-Object {
-    Write-Host "Resetting checkout for: $($_.ServerRelativeUrl)"
-    $_ | Stop-PnPFileVersion -CheckoutType DiscardCheckout -Force
-}
-
-
-        # Delete existing page if present
+        # Remove existing page
         if (Get-PnPPage -Identity $pageName -ErrorAction SilentlyContinue) {
             Remove-PnPPage -Identity $pageName -Force
-            Write-Host "Removed existing page, waiting for cleanup..."
-            Start-Sleep -Seconds 10  # Increased delay for page deletion
+            Write-Host "Removed existing page: $pageName" -ForegroundColor Yellow
+            
+            # Verify deletion
+            $retryCount = 0
+            while (Get-PnPPage -Identity $pageName -ErrorAction SilentlyContinue) {
+                if ($retryCount++ -ge 5) { throw "Page deletion failed" }
+                Start-Sleep -Seconds 5
+            }
         }
 
-        # Create new page with extended timeout
-        $page = Add-PnPPage -Name $pageName  -ErrorAction Stop
+        # Create new page
+        $page = Add-PnPPage -Name $pageName -Title $pageName -LayoutType Article -ErrorAction Stop
+        Write-Host "Created page: $pageName" -ForegroundColor Green
+
+        # Add section with retries
+        if (-not (Add-PageSection -PageName $pageName)) {
+            throw "Section creation failed"
+        }
+
+        # Prepare HTML content
+        $htmlContent = Get-Content $htmlFile.FullName -Raw
         
-         # First try standard PnP method
-            $section = Add-PnPPageSection -Page $PageName -SectionTemplate OneColumn -Order 1 -ErrorAction Stop
-            
-            # If standard method failed, use alternative approach
-            if (-not $section) {
-                # Add section using CanvasSectionTemplate
-                $newSection = $page.Sections.AddSection([PnP.Core.Model.Pages.CanvasSectionTemplate]::OneColumn)
-                $page.Save()
-                $page.Publish()
-                $section = $newSection
-            }
-            
-            if ($section) {
-                Write-Host "Section added successfully" -ForegroundColor Green
-                return $true
-            }
+        # Update resource paths
+        $htmlContent = $htmlContent -replace '(src|href)="(images|styles)/', "$1=""$siteUrl/$TargetLibrary/$2/"
+        
+        # SharePoint HTML wrapper
+        $webPartHtml = @"
+<div class="CanvasComponent">
+    <div class="CanvasZone">
+        <div class="CanvasSection">
+            <div class="ControlZone">
+                $htmlContent
+            </div>
+        </div>
+    </div>
+</div>
+"@
+
+        # Add web part
+        Add-PnPPageWebPart -Page $pageName -Component "Text" `
+            -Section 1 -Column 1 -WebPartProperties @{ innerHtml = $webPartHtml } | Out-Null
+        
+        # Publish page
+        Set-PnPPage -Identity $pageName -Publish | Out-Null
+        Write-Host "Published: $pageName" -ForegroundColor Green
+        
+        Start-Sleep -Seconds 3
     }
     catch {
-        Write-Warning "ERROR PROCESSING $pageName : $_"
-        continue
+        $errorDetails = @{
+            Timestamp = Get-Date
+            Page      = $pageName
+            Error     = $_.Exception.Message
+            Stack     = $_.ScriptStackTrace
+        }
+        $errorDetails | ConvertTo-Json | Out-File $logFile -Append
+        Write-Warning "Error processing $pageName : $_"
     }
 }
 
-# Navigation Setup with Validation
+# Build Navigation
 try {
-    $pages = Get-PnPPage -Folder "SitePages" -ErrorAction Stop | Where-Object { $_.Title }
-    if (-not $pages) { throw "No pages found in SitePages library" }
-
-    Write-Host "Building navigation for $($pages.Count) pages..."
-    $navigationNodes = $pages | ForEach-Object {
-        @{
-            Title = $_.Title
-            Url   = $_.ServerRelativeUrl
-        }
-    }
-
+    $pages = Get-PnPPage -Folder $pageLibrary | Where-Object { $_.Title }
+    
     # Clear existing navigation
-    Get-PnPNavigationNode -Location QuickLaunch | Remove-PnPNavigationNode -Force -ErrorAction SilentlyContinue
-
+    Get-PnPNavigationNode -Location QuickLaunch | Remove-PnPNavigationNode -Force
+    
     # Add new nodes
-    $navigationNodes | ForEach-Object {
-        Add-PnPNavigationNode -Title $_.Title -Url $_.Url -Location QuickLaunch -ErrorAction Stop
+    $pages | ForEach-Object {
+        Add-PnPNavigationNode -Title $_.Title -Url $_.ServerRelativeUrl -Location QuickLaunch
     }
     Write-Host "Navigation updated successfully" -ForegroundColor Green
 }
@@ -181,4 +203,5 @@ catch {
 }
 
 # Cleanup
-Remove-Item -Path $tempFolder -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -Path $tempFolder -Recurse -Force
+Write-Host "Migration completed in $((Get-Date) - $startTime)" -ForegroundColor Green
