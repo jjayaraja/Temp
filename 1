@@ -1,0 +1,107 @@
+# Parameters
+$siteUrl = "https://contoso.sharepoint.com/sites/yoursite"
+$zipFilePath = "C:\path\to\confluence-export.zip"
+$tempFolder = "C:\temp\ConfluenceExport"
+$imagesLibrary = "SiteAssets/images"
+$stylesLibrary = "SiteAssets/styles"
+
+# Connect to SharePoint
+Connect-PnPOnline -Url $siteUrl -Interactive
+
+# Extract ZIP file
+Expand-Archive -Path $zipFilePath -DestinationPath $tempFolder -Force
+
+# Create required folders
+Resolve-PnPFolder -SiteRelativePath $imagesLibrary
+Resolve-PnPFolder -SiteRelativePath $stylesLibrary
+
+# Upload assets
+$imagesFolder = Join-Path $tempFolder "images"
+Get-ChildItem $imagesFolder -Recurse | ForEach-Object {
+    $targetPath = $_.FullName.Replace($imagesFolder, $imagesLibrary)
+    Add-PnPFile -Path $_.FullName -Folder $targetPath -ErrorAction SilentlyContinue
+}
+
+$stylesFolder = Join-Path $tempFolder "styles"
+Get-ChildItem $stylesFolder -Recurse | ForEach-Object {
+    $targetPath = $_.FullName.Replace($stylesFolder, $stylesLibrary)
+    Add-PnPFile -Path $_.FullName -Folder $targetPath -ErrorAction SilentlyContinue
+}
+
+# Process HTML files
+$htmlFiles = Get-ChildItem -Path $tempFolder -Filter *.html -Recurse
+
+foreach ($htmlFile in $htmlFiles) {
+    $pageName = [System.IO.Path]::GetFileNameWithoutExtension($htmlFile.Name)
+    $htmlContent = Get-Content $htmlFile.FullName -Raw
+    
+    # Update paths
+    $htmlContent = $htmlContent -replace 'src="images/', "src=""$siteUrl/$imagesLibrary/"
+    $htmlContent = $htmlContent -replace 'href="styles/', "href=""$siteUrl/$stylesLibrary/"
+
+    try {
+        # Delete existing page if present
+        $existingPage = Get-PnPPage -Identity $pageName -ErrorAction SilentlyContinue
+        if ($existingPage) {
+            Remove-PnPPage -Identity $pageName -Force
+            Write-Host "Removed existing page: $pageName"
+        }
+
+        # Create new page
+        $page = Add-PnPPage -Name $pageName -Title $pageName -LayoutType Article -ErrorAction Stop
+        Write-Host "Created page: $pageName"
+
+        # Add section
+        Add-PnPPageSection -Page $pageName -SectionTemplate OneColumn -Order 1
+        
+        # Add HTML content with proper wrapper
+        $sharePointHtml = @"
+<div class="CanvasComponent">
+    <div class="CanvasZone">
+        <div class="CanvasSection">
+            <div class="ControlZone">
+                $htmlContent
+            </div>
+        </div>
+    </div>
+</div>
+"@
+        Add-PnPPageWebPart -Page $pageName -Component "Text" -Section 1 -Column 1 -WebPartProperties @{
+            "innerHtml" = $sharePointHtml
+        }
+
+        # Publish page
+        Set-PnPPage -Identity $pageName -Publish
+        Write-Host "Published page: $pageName"
+        
+        # Add delay to avoid throttling
+        Start-Sleep -Seconds 2
+    }
+    catch {
+        Write-Warning "Error processing $pageName : $_"
+        continue
+    }
+}
+
+# Navigation setup
+$pages = Get-PnPPage -Folder "SitePages"
+$navigationNodes = @()
+foreach ($page in $pages) {
+    $navigationNodes += @{
+        Title = $page.Title
+        Url   = $page.ServerRelativeUrl
+    }
+}
+
+# Clear existing navigation
+Get-PnPNavigationNode -Location QuickLaunch | Remove-PnPNavigationNode -Force
+
+# Add new navigation nodes
+foreach ($node in $navigationNodes) {
+    Add-PnPNavigationNode -Title $node.Title -Url $node.Url -Location QuickLaunch
+}
+
+# Cleanup
+Remove-Item -Path $tempFolder -Recurse -Force
+
+Write-Host "Migration completed!" -ForegroundColor Green
