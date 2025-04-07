@@ -129,27 +129,24 @@ $files | Where-Object { $_.CheckedOutByUser } | ForEach-Object {
         }
 
         # Create new page with extended timeout
-        $page = Add-PnPPage -Name $pageName -Title $pageName -LayoutType Article -ErrorAction Stop
+        $page = Add-PnPPage -Name $pageName  -ErrorAction Stop
         
-        # Wait for page initialization
-        Start-Sleep -Seconds 5
-        
-        # Verify page creation
-        $page = Get-PnPPage -Identity $pageName -ErrorAction Stop
-        if (-not $page) {
-            throw "Page creation verification failed"
-        }
-
-        # Add section using enhanced function
-        if (-not (Add-PageSection -PageName $pageName)) {
-            throw "Critical failure adding section"
-        }
-
-        # Add web part content
-        $webPart = Add-PnPPageWebPart -Page $pageName -Component "Text" `
-            -Section 1 -Column 1 -WebPartProperties @{ innerHtml = $webPartHtml }
-        
-        # ... [rest of the code remains the same] ...
+         # First try standard PnP method
+            $section = Add-PnPPageSection -Page $PageName -SectionTemplate OneColumn -Order 1 -ErrorAction Stop
+            
+            # If standard method failed, use alternative approach
+            if (-not $section) {
+                # Add section using CanvasSectionTemplate
+                $newSection = $page.Sections.AddSection([PnP.Core.Model.Pages.CanvasSectionTemplate]::OneColumn)
+                $page.Save()
+                $page.Publish()
+                $section = $newSection
+            }
+            
+            if ($section) {
+                Write-Host "Section added successfully" -ForegroundColor Green
+                return $true
+            }
     }
     catch {
         Write-Warning "ERROR PROCESSING $pageName : $_"
