@@ -1,171 +1,135 @@
-PowerShell Script for Bulk Upload of HTML to SharePoint Modern Pages
-Overview
-This script uses the PnP.PowerShell module (latest version) to convert a folder of HTML files into SharePoint Online modern pages. It connects to the SharePoint site, scans a local directory for all .html files, and for each file it creates or updates a modern Site Page with a Text web part containing the HTML content. The script includes robust connection checks, error handling (with try{ } catch{ } blocks), and console logging to indicate whether pages were created, updated, or skipped.
-Steps Performed by the Script
-Connect to SharePoint Online – Uses Connect-PnPOnline to authenticate to the site (supports MFA via the -Interactive switch)​
-LEARN.MICROSOFT.COM
-. The script verifies the connection and stops if it fails.
-Find HTML Files Recursively – Scans the specified local folder (and subfolders) for .html files using Get-ChildItem -Recurse. If no files are found, the script exits.
-Process Each HTML File – For each file found, the script will:
-Derive the page name from the HTML filename (e.g. AboutUs.html → page name “AboutUs”).
-Replace image paths in the file content – any occurrence of src="images/... is replaced with src="/sites/abc/SiteAssets/images/... to point to the SharePoint site’s image library. (Ensure those images are uploaded to SiteAssets/images in the site.)
-Check if the SharePoint page already exists – Using PnP commands, it looks for an existing page in the Site Pages library. If the page exists, it will update it; if not, it will create a new page.
-Create New Page (if not exists) – Calls Add-PnPPage to create a modern page in the Site Pages library​
-PNP.GITHUB.IO
-. The -Name parameter defines the page URL name (”.aspx”), and we also set the page Title to the same name for clarity​
-PNP.GITHUB.IO
-. Then:
-Adds a new one-column section with Add-PnPPageSection (layout for content).
-Inserts the HTML content into a Text web part using Add-PnPPageTextPart​
-PNP.GITHUB.IO
-. This places all HTML text (with formatting and images) on the page’s canvas via a Text control.
-Publishes the page so it’s checked in and visible to viewers (using the page’s .Publish() method).
-Logs the page as “created”.
-Update Existing Page (if exists) – If the page already exists:
-Uses Undo-PnPFileCheckedOut to discard any checked-out version of the page (ensuring no stuck edits prevent update)​
-PNP.GITHUB.IO
-. This will toss out any unpublished changes on that page.
-Optionally compares the existing page’s current text content to the new HTML content. If they are identical, it logs that the page is up-to-date and skips updating to avoid unnecessary changes.
-Removes any existing web parts from the page using Get-PnPPageComponent and Remove-PnPPageComponent (this clears old content)​
-PNP.GITHUB.IO
-.
-Adds the new HTML content as a Text part (same as for new page).
-Publishes the page by retrieving it and calling .Publish() (so the updated content is saved and published)​
-PNP.GITHUB.IO
-.
-Logs the page as “updated”.
-Error Handling – The script wraps major operations in try...catch blocks:
-The connection step is in a try/catch to catch login failures.
-Each file’s processing is in a try/catch so one failed page doesn’t stop the whole script – errors are caught and logged (with the error message) and the script continues to the next file.
-Warnings are written if certain non-critical steps fail (e.g. unable to retrieve existing content for comparison).
-Logging – Informational messages are written to the console for each significant action: connection success, each file processed, page creation, page update, pages skipped (no change), and any errors. This makes it easy to review what the script did for each file.
-With these steps, the script ensures that each HTML file is reflected as a modern SharePoint page with its content in a Text web part. It is designed for compatibility with the latest PnP.PowerShell module and SharePoint Online modern pages.
-PowerShell Script Implementation
-Below is the complete PowerShell script fulfilling the above requirements. You can copy-paste and run this in PowerShell (after installing the PnP.PowerShell module). Be sure to adjust the $siteUrl, $sitePath, and $localFolder variables for your environment before running:
-powershell
-Copy
-# Variables – update these for your environment
-$siteUrl    = "https://abc.com"            # SharePoint Online site URL
-$sitePath   = "/sites/abc"                # Site path (for constructing server-relative URLs)
-$localFolder = "C:\Path\To\Html\Files"     # Local folder containing .html files
+# Parameters (modify these as needed)
+$SiteUrl   = "https://abc.com/sites/abc"    # SharePoint Online site URL
+$LocalRoot = "C:\ConfluenceExport"          # Root folder of the Confluence HTML export
 
-# Connect to SharePoint Online site
-Write-Host "Connecting to SharePoint site $siteUrl ..." -ForegroundColor Cyan
-try {
-    Connect-PnPOnline -Url $siteUrl -Interactive 
-    Write-Host "Connected to $siteUrl successfully." -ForegroundColor Green
-}
-catch {
-    Write-Error "ERROR: Failed to connect to $siteUrl. $($_.Exception.Message)"
-    exit 1
-}
+# Import PnP.PowerShell module (make sure it's installed)
+# Import-Module PnP.PowerShell   # (uncomment if needed)
 
-# Verify local folder exists
-if (!(Test-Path -LiteralPath $localFolder -PathType Container)) {
-    Write-Error "ERROR: The folder path '$localFolder' does not exist."
-    exit 1
-}
+# Define the functions
 
-# Get all HTML files in the folder (recursively)
-$htmlFiles = Get-ChildItem -Path $localFolder -Recurse -Filter "*.html"
-if (!$htmlFiles -or $htmlFiles.Count -eq 0) {
-    Write-Host "No HTML files found in '$localFolder'. Script will exit." -ForegroundColor Yellow
-    return
-}
-
-# Process each HTML file
-foreach ($file in $htmlFiles) {
-    Write-Host "`nProcessing file: $($file.FullName)" -ForegroundColor White
-    $pageName = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)  # e.g. "AboutUs.html" -> "AboutUs"
-    $pageUrl  = "$sitePath/SitePages/$pageName.aspx"  # server-relative URL of the page in Site Pages library
-
+function Connect-ToSharePoint {
+    [CmdletBinding()]
+    param([string]$SiteUrl)
     try {
-        # Check if the page already exists in SharePoint
-        $existingItem = Get-PnPFile -Url $pageUrl -AsListItem -ErrorAction SilentlyContinue
-        $pageExists = $existingItem -ne $null
-
-        if ($pageExists) {
-            Write-Host "Page '$pageName.aspx' exists. Updating content..." -ForegroundColor Cyan
-
-            # Discard any checked-out version (if the page is checked out to someone)
-            try {
-                Undo-PnPFileCheckedOut -Url $pageUrl -ErrorAction Stop
-                Write-Host " - Discarded a checked-out draft of '$pageName.aspx'." -ForegroundColor DarkCyan
-            }
-            catch {
-                if ($_.Exception.Message -like "*not checked out*") {
-                    Write-Host " - No checked-out draft to discard for '$pageName.aspx'." -ForegroundColor DarkGray
-                } else {
-                    Write-Warning " - Warning: Could not discard checkout for '$pageName.aspx': $($_.Exception.Message)"
-                }
-            }
-
-            # (Optional) Get current text content of the page to decide skip/update
-            $currentText = ""
-            try {
-                # Find the Text control on the page and get its Text content
-                $components = Get-PnPPageComponent -Page $pageName
-                $textComponent = $components | Where-Object { $_.Text -and ($_.Type -eq "Text" -or $_.Title -eq "") }
-                if ($textComponent) { $currentText = $textComponent.Text }
-            }
-            catch {
-                Write-Warning " - Warning: Could not retrieve existing content from '$pageName.aspx' for comparison."
-            }
-
-            # Read HTML file content and replace image src paths
-            $htmlContent = Get-Content -Path $file.FullName -Raw 
-            $htmlContent = $htmlContent -replace '(?i)src="images/', 'src="' + "$sitePath" + '/SiteAssets/images/'  # replace double-quoted src
-            $htmlContent = $htmlContent -replace "(?i)src='images/", "src='" + "$sitePath" + "/SiteAssets/images/"   # replace single-quoted src
-
-            # Skip update if content is unchanged
-            if ($currentText -ne "" -and $currentText -eq $htmlContent) {
-                Write-Host " - Content is identical to existing page. Skipping update for '$pageName.aspx'." -ForegroundColor Gray
-                continue  # move to next file without updating
-            }
-
-            # Remove all existing web part components from the page (to replace with new content)
-            $components = Get-PnPPageComponent -Page $pageName
-            foreach ($comp in $components) {
-                Remove-PnPPageComponent -Page $pageName -InstanceId $comp.InstanceId -Force
-            }
-
-            # Add the HTML content as a Text web part on the page (in the first section/column)
-            Add-PnPPageTextPart -Page $pageName -Section 1 -Column 1 -Text $htmlContent
-
-            # Publish the page (check in as a major version)
-            $page = Get-PnPPage -Identity $pageName
-            $page.Publish("Updated via script")
-
-            Write-Host " - Updated page: $pageName.aspx" -ForegroundColor Yellow
-        }
-        else {
-            Write-Host "Page '$pageName.aspx' does not exist. Creating new modern page..." -ForegroundColor Cyan
-
-            # Read HTML file content and replace image src paths
-            $htmlContent = Get-Content -Path $file.FullName -Raw
-            $htmlContent = $htmlContent -replace '(?i)src="images/', 'src="' + "$sitePath" + '/SiteAssets/images/'
-            $htmlContent = $htmlContent -replace "(?i)src='images/", "src='" + "$sitePath" + "/SiteAssets/images/"
-
-            # Create a new modern page in Site Pages library
-            Add-PnPPage -Name $pageName -Title $pageName -LayoutType Article
-            # Add a section (One-column layout) and add the Text web part with HTML content
-            Add-PnPPageSection -Page $pageName -SectionTemplate OneColumn -Order 1
-            Add-PnPPageTextPart -Page $pageName -Section 1 -Column 1 -Text $htmlContent
-
-            # Publish the new page (so it's checked in and visible)
-            $page = Get-PnPPage -Identity $pageName
-            $page.Publish("Published via script")
-
-            Write-Host " - Created page: $pageName.aspx" -ForegroundColor Green
-        }
-    }
-    catch {
-        Write-Error "ERROR processing '$($file.FullName)': $($_.Exception.Message)"
-        continue  # Continue with next file
+        Write-Host "Connecting to $SiteUrl ..." -ForegroundColor Cyan
+        Connect-PnPOnline -Url $SiteUrl -Interactive
+        Write-Host "Successfully connected to $SiteUrl." -ForegroundColor Green
+    } catch {
+        Write-Host "ERROR: Failed to connect to $SiteUrl. $_" -ForegroundColor Red
+        throw
     }
 }
 
-Write-Host "`nScript execution completed." -ForegroundColor White
-How it works: The script connects to the SharePoint site and iterates through each HTML file. For each file, it constructs the target page name and checks if that page exists on SharePoint. If the page exists, it cleans up any checked-out draft and replaces the page’s web parts with a single Text part containing the new HTML content. If the page doesn’t exist, it creates a new modern page with the HTML content. After adding the content, it calls the page’s Publish() method to commit the changes (publishing the page for readers)​
-PNP.GITHUB.IO
-. Throughout the process, Write-Host outputs the status: pages that are created, updated, skipped (if no changes), or any errors encountered.
+function Upload-FolderToSiteAssets {
+    [CmdletBinding()]
+    param([string]$LocalFolder, [string]$TargetFolder)
+    if (-not (Test-Path $LocalFolder)) {
+        Write-Host "Skipping upload: Local folder '$LocalFolder' not found." -ForegroundColor Yellow
+        return
+    }
+    Write-Host "Uploading contents of '$LocalFolder' to SiteAssets/$TargetFolder ..." -ForegroundColor Cyan
+    $files = Get-ChildItem -Path $LocalFolder -Recurse -File
+    foreach ($file in $files) {
+        $relativePath = $file.FullName.Substring($LocalFolder.Length) -replace '^[\\/]', ''
+        $targetFolderPath = "SiteAssets/$TargetFolder"
+        if ($relativePath -and $relativePath -ne $file.Name) {
+            $subDir = Split-Path $relativePath -Parent
+            $targetFolderPath += "/$subDir"
+        }
+        try {
+            Add-PnPFile -Path $file.FullName -Folder $targetFolderPath
+            Write-Host "Uploaded '$($file.Name)' to '$targetFolderPath'."
+        } catch {
+            Write-Host "ERROR: Failed to upload '$($file.FullName)'. $_" -ForegroundColor Red
+        }
+    }
+}
+
+function Rewrite-LinksInHtml {
+    [CmdletBinding()]
+    param([string]$HtmlContent)
+    $HtmlContent = $HtmlContent -replace 'images/', '/sites/abc/SiteAssets/images/'
+    $HtmlContent = $HtmlContent -replace 'styles/', '/sites/abc/SiteAssets/styles/'
+    $HtmlContent = $HtmlContent -replace 'attachments/', '/sites/abc/SiteAssets/attachments/'
+    return $HtmlContent
+}
+
+function CreateOrUpdate-ModernPage {
+    [CmdletBinding()]
+    param([string]$PageName, [string]$HtmlContent)
+    $pageFileName = "$PageName.aspx"
+    $pageUrl = "/sites/abc/SitePages/$pageFileName"
+    $pageExists = $false
+    try {
+        $null = Get-PnPPage -Identity $PageName -ErrorAction Stop
+        $pageExists = $true
+    } catch {
+        $pageExists = $false
+    }
+    if ($pageExists) {
+        Write-Host "Updating existing page: $PageName" -ForegroundColor Cyan
+        try {
+            Set-PnPFileCheckedIn -Url $pageUrl -CheckInType OverwriteCheckIn -Comment "Discarding old draft"
+        } catch { }
+        $components = Get-PnPPageComponent -Page $PageName
+        foreach ($comp in $components) {
+            try {
+                Remove-PnPPageComponent -Page $PageName -InstanceId $($comp.InstanceId) -Force
+            } catch {
+                Write-Host "Warning: Failed to remove a component from $PageName. $_" -ForegroundColor Yellow
+            }
+        }
+        try {
+            Add-PnPPageTextPart -Page $PageName -Text $HtmlContent
+            Write-Host "Replaced content on page '$PageName'." -ForegroundColor Green
+        } catch {
+            Write-Host "ERROR: Failed to add content to page '$PageName'. $_" -ForegroundColor Red
+            return
+        }
+    }
+    else {
+        Write-Host "Creating new page: $PageName" -ForegroundColor Cyan
+        try {
+            Add-PnPPage -Name $PageName -LayoutType Article
+            Write-Host "Created page '$PageName'." -ForegroundColor Green
+        } catch {
+            Write-Host "ERROR: Failed to create page '$PageName'. $_" -ForegroundColor Red
+            return
+        }
+        try {
+            Add-PnPPageTextPart -Page $PageName -Text $HtmlContent
+            Write-Host "Added content to new page '$PageName'." -ForegroundColor Green
+        } catch {
+            Write-Host "ERROR: Failed to add content to page '$PageName'. $_" -ForegroundColor Red
+            return
+        }
+    }
+    try {
+        Set-PnPFileCheckedIn -Url $pageUrl -CheckInType MajorCheckIn -Comment "Publish page"
+        Write-Host "Published page '$PageName'." -ForegroundColor Green
+    } catch {
+        Write-Host "ERROR: Failed to publish page '$PageName'. $_" -ForegroundColor Red
+    }
+}
+
+# Main script execution
+Connect-ToSharePoint -SiteUrl $SiteUrl
+
+# Upload asset folders (if they exist in the local export)
+Upload-FolderToSiteAssets -LocalFolder (Join-Path $LocalRoot "images") -TargetFolder "images"
+Upload-FolderToSiteAssets -LocalFolder (Join-Path $LocalRoot "styles") -TargetFolder "styles"
+Upload-FolderToSiteAssets -LocalFolder (Join-Path $LocalRoot "attachments") -TargetFolder "attachments"
+
+# Process each HTML file in the root of the export (and subfolders, if any)
+$htmlFiles = Get-ChildItem -Path $LocalRoot -Recurse -Filter "*.html" -File
+foreach ($file in $htmlFiles) {
+    # Use file name (without extension) as page name
+    $pageName = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
+    Write-Host "Processing page: $pageName (from file $($file.Name))" -ForegroundColor Cyan
+    # Read HTML content
+    $htmlContent = Get-Content $file.FullName -Raw
+    # Rewrite links to SharePoint URLs
+    $htmlContent = Rewrite-LinksInHtml -HtmlContent $htmlContent
+    # Create or update the SharePoint modern page
+    CreateOrUpdate-ModernPage -PageName $pageName -HtmlContent $htmlContent
+}
