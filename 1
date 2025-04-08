@@ -42,15 +42,14 @@ function Clean-PageName {
     $safe = $clean.Trim().Replace(' ', '-')
     return @{ Title = $clean; FileName = $safe }
 }
-
 # --- FUNCTION: Rewrite links in HTML ---
 function Rewrite-LinksInHtml {
     param([string]$Html)
     $web = Get-PnPWeb
     $base = $web.Url.TrimEnd('/') + "/SiteAssets"
-    $Html = $Html -replace 'src="images/', "src=\"$base/images/"
-    $Html = $Html -replace 'href="attachments/', "href=\"$base/attachments/"
-    $Html = $Html -replace 'href="styles/', "href=\"$base/styles/"
+    $Html = $Html -replace 'src=\"images/', ("src=\"" + $base + "/images/")
+    $Html = $Html -replace 'href=\"attachments/', ("href=\"" + $base + "/attachments/")
+    $Html = $Html -replace 'href=\"styles/', ("href=\"" + $base + "/styles/")
     return $Html
 }
 
@@ -127,3 +126,4 @@ foreach ($file in $htmlFiles) {
 Create-ConfluenceIndexPage -PageRecords $AllMigratedPages -PageName $IndexPageName
 
 Write-Host "Migration Complete! Index page created: $IndexPageName" -ForegroundColor Green
+
