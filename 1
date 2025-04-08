@@ -1,135 +1,129 @@
-# Parameters (modify these as needed)
-$SiteUrl   = "https://abc.com/sites/abc"    # SharePoint Online site URL
-$LocalRoot = "C:\ConfluenceExport"          # Root folder of the Confluence HTML export
+# ==============================
+# Confluence to SharePoint Migrator
+# Author: CODGrid + ChatGPT
+# Version: 1.0 (Modular, Grid Index)
+# ==============================
 
-# Import PnP.PowerShell module (make sure it's installed)
-# Import-Module PnP.PowerShell   # (uncomment if needed)
+# --- CONFIGURATION ---
+$SiteUrl = "https://abc.com/sites/abc"
+$ExportPath = "C:\ConfluenceExport"
+$IndexPageName = "All-Confluence-Pages"
 
-# Define the functions
+# --- GLOBALS ---
+$AllMigratedPages = @()
 
+# --- FUNCTION: Connect to SharePoint ---
 function Connect-ToSharePoint {
-    [CmdletBinding()]
-    param([string]$SiteUrl)
     try {
-        Write-Host "Connecting to $SiteUrl ..." -ForegroundColor Cyan
-        Connect-PnPOnline -Url $SiteUrl -Interactive
-        Write-Host "Successfully connected to $SiteUrl." -ForegroundColor Green
+        Connect-PnPOnline -Url $SiteUrl -Interactive -ErrorAction Stop
+        Write-Host "Connected to $SiteUrl" -ForegroundColor Green
     } catch {
-        Write-Host "ERROR: Failed to connect to $SiteUrl. $_" -ForegroundColor Red
-        throw
+        Write-Error "Connection failed: $_"
+        exit 1
     }
 }
 
+# --- FUNCTION: Upload folders to SiteAssets ---
 function Upload-FolderToSiteAssets {
-    [CmdletBinding()]
-    param([string]$LocalFolder, [string]$TargetFolder)
-    if (-not (Test-Path $LocalFolder)) {
-        Write-Host "Skipping upload: Local folder '$LocalFolder' not found." -ForegroundColor Yellow
-        return
-    }
-    Write-Host "Uploading contents of '$LocalFolder' to SiteAssets/$TargetFolder ..." -ForegroundColor Cyan
-    $files = Get-ChildItem -Path $LocalFolder -Recurse -File
-    foreach ($file in $files) {
-        $relativePath = $file.FullName.Substring($LocalFolder.Length) -replace '^[\\/]', ''
-        $targetFolderPath = "SiteAssets/$TargetFolder"
-        if ($relativePath -and $relativePath -ne $file.Name) {
-            $subDir = Split-Path $relativePath -Parent
-            $targetFolderPath += "/$subDir"
-        }
-        try {
-            Add-PnPFile -Path $file.FullName -Folder $targetFolderPath
-            Write-Host "Uploaded '$($file.Name)' to '$targetFolderPath'."
-        } catch {
-            Write-Host "ERROR: Failed to upload '$($file.FullName)'. $_" -ForegroundColor Red
-        }
-    }
+    param([string]$LocalFolder)
+    if (!(Test-Path $LocalFolder)) { return }
+    $folderName = Split-Path $LocalFolder -Leaf
+    $web = Get-PnPWeb
+    $target = "$($web.ServerRelativeUrl.TrimEnd('/'))/SiteAssets/$folderName"
+    Copy-PnPFolder -LocalPath $LocalFolder -TargetUrl $target -Recurse -Force
+    Write-Host "Uploaded: $folderName to SiteAssets"
 }
 
+# --- FUNCTION: Clean Page Name ---
+function Clean-PageName {
+    param([string]$RawName)
+    $base = [System.IO.Path]::GetFileNameWithoutExtension($RawName)
+    $clean = $base -replace '[_-][0-9A-Za-z]+$','' -replace '[^A-Za-z0-9\s_-]', ''
+    $safe = $clean.Trim().Replace(' ', '-')
+    return @{ Title = $clean; FileName = $safe }
+}
+
+# --- FUNCTION: Rewrite links in HTML ---
 function Rewrite-LinksInHtml {
-    [CmdletBinding()]
-    param([string]$HtmlContent)
-    $HtmlContent = $HtmlContent -replace 'images/', '/sites/abc/SiteAssets/images/'
-    $HtmlContent = $HtmlContent -replace 'styles/', '/sites/abc/SiteAssets/styles/'
-    $HtmlContent = $HtmlContent -replace 'attachments/', '/sites/abc/SiteAssets/attachments/'
-    return $HtmlContent
+    param([string]$Html)
+    $web = Get-PnPWeb
+    $base = $web.Url.TrimEnd('/') + "/SiteAssets"
+    $Html = $Html -replace 'src="images/', "src=\"$base/images/"
+    $Html = $Html -replace 'href="attachments/', "href=\"$base/attachments/"
+    $Html = $Html -replace 'href="styles/', "href=\"$base/styles/"
+    return $Html
 }
 
+# --- FUNCTION: Create or Update Modern Page ---
 function CreateOrUpdate-ModernPage {
-    [CmdletBinding()]
-    param([string]$PageName, [string]$HtmlContent)
-    $pageFileName = "$PageName.aspx"
-    $pageUrl = "/sites/abc/SitePages/$pageFileName"
-    $pageExists = $false
+    param(
+        [string]$PageName,
+        [string]$PageTitle,
+        [string]$HtmlContent
+    )
     try {
-        $null = Get-PnPPage -Identity $PageName -ErrorAction Stop
-        $pageExists = $true
+        $exists = Get-PnPPage -Identity $PageName -ErrorAction SilentlyContinue
+        if ($exists) { Remove-PnPPage -Identity $PageName -Force }
+        Add-PnPPage -Name $PageName -Title $PageTitle -LayoutType Article
+        Add-PnPPageSection -Page $PageName -SectionTemplate OneColumn -Order 1 | Out-Null
+        Add-PnPPageTextPart -Page $PageName -Section 1 -Column 1 -Text $HtmlContent | Out-Null
+        Set-PnPPage -Identity $PageName -Publish
+        Write-Host "Published: $PageTitle ($PageName)" -ForegroundColor Cyan
     } catch {
-        $pageExists = $false
-    }
-    if ($pageExists) {
-        Write-Host "Updating existing page: $PageName" -ForegroundColor Cyan
-        try {
-            Set-PnPFileCheckedIn -Url $pageUrl -CheckInType OverwriteCheckIn -Comment "Discarding old draft"
-        } catch { }
-        $components = Get-PnPPageComponent -Page $PageName
-        foreach ($comp in $components) {
-            try {
-                Remove-PnPPageComponent -Page $PageName -InstanceId $($comp.InstanceId) -Force
-            } catch {
-                Write-Host "Warning: Failed to remove a component from $PageName. $_" -ForegroundColor Yellow
-            }
-        }
-        try {
-            Add-PnPPageTextPart -Page $PageName -Text $HtmlContent
-            Write-Host "Replaced content on page '$PageName'." -ForegroundColor Green
-        } catch {
-            Write-Host "ERROR: Failed to add content to page '$PageName'. $_" -ForegroundColor Red
-            return
-        }
-    }
-    else {
-        Write-Host "Creating new page: $PageName" -ForegroundColor Cyan
-        try {
-            Add-PnPPage -Name $PageName -LayoutType Article
-            Write-Host "Created page '$PageName'." -ForegroundColor Green
-        } catch {
-            Write-Host "ERROR: Failed to create page '$PageName'. $_" -ForegroundColor Red
-            return
-        }
-        try {
-            Add-PnPPageTextPart -Page $PageName -Text $HtmlContent
-            Write-Host "Added content to new page '$PageName'." -ForegroundColor Green
-        } catch {
-            Write-Host "ERROR: Failed to add content to page '$PageName'. $_" -ForegroundColor Red
-            return
-        }
-    }
-    try {
-        Set-PnPFileCheckedIn -Url $pageUrl -CheckInType MajorCheckIn -Comment "Publish page"
-        Write-Host "Published page '$PageName'." -ForegroundColor Green
-    } catch {
-        Write-Host "ERROR: Failed to publish page '$PageName'. $_" -ForegroundColor Red
+        Write-Error "Failed to create/update $PageName: $_"
     }
 }
 
-# Main script execution
-Connect-ToSharePoint -SiteUrl $SiteUrl
+# --- FUNCTION: Create Grid Index Page ---
+function Create-ConfluenceIndexPage {
+    param([array]$PageRecords, [string]$PageName)
+    $rows = ""
+    foreach ($rec in $PageRecords) {
+        $rows += "<tr><td>$($rec.Title)</td><td>$($rec.Created)</td><td><a href='$($rec.Url)'>Open</a></td></tr>"
+    }
+    $html = @"
+    <style>
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ddd; padding: 8px; }
+        th { background-color: #f2f2f2; }
+    </style>
+    <h2>All Confluence Pages</h2>
+    <table>
+        <tr><th>Page Title</th><th>Created Date</th><th>Link</th></tr>
+        $rows
+    </table>
+"@
+    CreateOrUpdate-ModernPage -PageName $PageName -PageTitle "All Confluence Pages" -HtmlContent $html
+}
 
-# Upload asset folders (if they exist in the local export)
-Upload-FolderToSiteAssets -LocalFolder (Join-Path $LocalRoot "images") -TargetFolder "images"
-Upload-FolderToSiteAssets -LocalFolder (Join-Path $LocalRoot "styles") -TargetFolder "styles"
-Upload-FolderToSiteAssets -LocalFolder (Join-Path $LocalRoot "attachments") -TargetFolder "attachments"
+# --- MAIN EXECUTION ---
+Connect-ToSharePoint
 
-# Process each HTML file in the root of the export (and subfolders, if any)
-$htmlFiles = Get-ChildItem -Path $LocalRoot -Recurse -Filter "*.html" -File
+# Upload Assets
+Upload-FolderToSiteAssets "$ExportPath\images"
+Upload-FolderToSiteAssets "$ExportPath\styles"
+Upload-FolderToSiteAssets "$ExportPath\attachments"
+
+# Process HTML Files
+$htmlFiles = Get-ChildItem -Path $ExportPath -Filter *.html
 foreach ($file in $htmlFiles) {
-    # Use file name (without extension) as page name
-    $pageName = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
-    Write-Host "Processing page: $pageName (from file $($file.Name))" -ForegroundColor Cyan
-    # Read HTML content
-    $htmlContent = Get-Content $file.FullName -Raw
-    # Rewrite links to SharePoint URLs
-    $htmlContent = Rewrite-LinksInHtml -HtmlContent $htmlContent
-    # Create or update the SharePoint modern page
-    CreateOrUpdate-ModernPage -PageName $pageName -HtmlContent $htmlContent
+    $info = Clean-PageName -RawName $file.Name
+    $title = $info.Title
+    $name = $info.FileName
+    $html = Get-Content -Path $file.FullName -Raw
+    $html = Rewrite-LinksInHtml -Html $html
+    CreateOrUpdate-ModernPage -PageName $name -PageTitle $title -HtmlContent $html
+
+    $web = Get-PnPWeb
+    $rel = $web.ServerRelativeUrl.TrimEnd('/')
+    $AllMigratedPages += [PSCustomObject]@{
+        Title = $title
+        Url = "$rel/SitePages/$name.aspx"
+        Created = (Get-Date -Format 'yyyy-MM-dd')
+    }
 }
+
+# Generate Index Page
+Create-ConfluenceIndexPage -PageRecords $AllMigratedPages -PageName $IndexPageName
+
+Write-Host "Migration Complete! Index page created: $IndexPageName" -ForegroundColor Green
