@@ -127,3 +127,33 @@ Create-ConfluenceIndexPage -PageRecords $AllMigratedPages -PageName $IndexPageNa
 
 Write-Host "Migration Complete! Index page created: $IndexPageName" -ForegroundColor Green
 
+
+
+# --- FUNCTION: Add Index Page to Left Navigation ---
+function Add-ToLeftNavigation {
+    param(
+        [string]$PageTitle,
+        [string]$PageUrl
+    )
+    try {
+        $existingNode = Get-PnPNavigationNode -Location QuickLaunch | Where-Object { $_.Title -eq $PageTitle }
+        if (-not $existingNode) {
+            Add-PnPNavigationNode -Title $PageTitle -Url $PageUrl -Location QuickLaunch -ErrorAction Stop
+            Write-Host "Added '$PageTitle' to left navigation." -ForegroundColor Green
+        } else {
+            Write-Host "Navigation link '$PageTitle' already exists. Skipping..." -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Error "Failed to add '$PageTitle' to left navigation: $_"
+    }
+}
+
+
+
+$web = Get-PnPWeb
+$serverRelUrl = $web.ServerRelativeUrl.TrimEnd('/')
+$indexPageUrl = "$serverRelUrl/SitePages/$IndexPageName.aspx"
+Add-ToLeftNavigation -PageTitle "All Confluence Pages" -PageUrl $indexPageUrl
+
+
+
