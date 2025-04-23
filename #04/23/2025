@@ -1,0 +1,292 @@
+#04/23/2025
+
+<#
+.SYNOPSIS
+  A PowerShell script to test SharePoint API CRUD operations using Azure AD app registration with sites.selected permission.
+
+.DESCRIPTION
+  This script demonstrates how to:
+  1. Authenticate to SharePoint using Azure AD app registration with certificate
+  2. Perform CRUD operations on a SharePoint list:
+     - Create a list item
+     - Read list items
+     - Update a list item
+     - Delete a list item
+  
+.NOTES
+  Prerequisites:
+  1. Azure AD app registration with sites.selected permission granted to specific SharePoint site
+  2. Certificate for authentication (can be self-signed for testing)
+  3. PnP.PowerShell module installed (Install-Module PnP.PowerShell)
+#>
+
+#-----------------------------------------------------------
+# Configuration - Update these values with your own details
+#-----------------------------------------------------------
+$tenantId = "your-tenant-id"                             # Your tenant ID (GUID)
+$clientId = "your-client-id"                             # Your Azure AD app registration client ID
+$certificatePath = "C:\path\to\your\certificate.pfx"     # Path to your PFX certificate
+$certificatePassword = "your-certificate-password"       # Password for your certificate
+$sharepointSiteUrl = "https://yourtenant.sharepoint.com/sites/yoursite"  # URL of the SharePoint site
+$listName = "YourListName"                               # Name of the SharePoint list
+
+#-----------------------------------------------------------
+# Helper Functions
+#-----------------------------------------------------------
+
+function Get-AccessToken {
+    param (
+        [string]$TenantId,
+        [string]$ClientId,
+        [string]$CertificatePath,
+        [SecureString]$CertificatePassword
+    )
+    
+    Write-Host "Acquiring access token..." -ForegroundColor Yellow
+    
+    try {
+        # Convert certificate password to secure string if provided as plain text
+        if ($CertificatePassword -isnot [SecureString]) {
+            $securePassword = ConvertTo-SecureString -String $CertificatePassword -AsPlainText -Force
+        } else {
+            $securePassword = $CertificatePassword
+        }
+        
+        # Connect to SharePoint using PnP PowerShell
+        Connect-PnPOnline -Url $sharepointSiteUrl -ClientId $ClientId -Tenant "$TenantId.onmicrosoft.com" -CertificatePath $CertificatePath -CertificatePassword $securePassword
+        
+        # Get access token from connection
+        $accessToken = Get-PnPAccessToken
+        
+        Write-Host "Access token acquired successfully." -ForegroundColor Green
+        return $accessToken
+    }
+    catch {
+        Write-Error "Error acquiring access token: $_"
+        throw
+    }
+}
+
+function Invoke-SharePointRequest {
+    param (
+        [string]$Method,
+        [string]$Endpoint,
+        [string]$AccessToken,
+        [object]$Body = $null
+    )
+    
+    $url = "$sharepointSiteUrl/_api/$Endpoint"
+    $headers = @{
+        "Accept" = "application/json;odata=verbose"
+        "Content-Type" = "application/json;odata=verbose"
+        "Authorization" = "Bearer $AccessToken"
+    }
+    
+    # Add request digest for POST/PUT/DELETE operations
+    if ($Method -ne "GET") {
+        # Get the request digest first
+        $digestUrl = "$sharepointSiteUrl/_api/contextinfo"
+        $digestHeaders = @{
+            "Accept" = "application/json;odata=verbose"
+            "Authorization" = "Bearer $AccessToken"
+        }
+        
+        $digestResponse = Invoke-RestMethod -Uri $digestUrl -Method Post -Headers $digestHeaders
+        $requestDigest = $digestResponse.d.GetContextWebInformation.FormDigestValue
+        
+        $headers["X-RequestDigest"] = $requestDigest
+        
+        # Add etag header for update/delete operations if needed
+        if ($Method -eq "PATCH" -or $Method -eq "DELETE") {
+            $headers["IF-MATCH"] = "*" # Use "*" to skip version checking or use a specific etag value if needed
+        }
+        
+        if ($Method -eq "PATCH") {
+            $headers["X-HTTP-Method"] = "MERGE"
+            $Method = "POST" # SharePoint REST API uses POST with X-HTTP-Method header for updates
+        }
+    }
+    
+    $params = @{
+        Uri = $url
+        Method = $Method
+        Headers = $headers
+        ContentType = "application/json;odata=verbose"
+    }
+    
+    if ($Body -and $Method -ne "GET") {
+        $jsonBody = ConvertTo-Json $Body -Depth 10
+        $params.Add("Body", $jsonBody)
+    }
+    
+    try {
+        Write-Host "Sending $Method request to $url" -ForegroundColor Cyan
+        $response = Invoke-RestMethod @params
+        return $response
+    }
+    catch {
+        Write-Error "Error executing SharePoint API request: $_"
+        Write-Error "Status Code: $($_.Exception.Response.StatusCode.value__)"
+        Write-Error "Status Description: $($_.Exception.Response.StatusDescription)"
+        
+        try {
+            $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+            $reader.BaseStream.Position = 0
+            $reader.DiscardBufferedData()
+            $responseBody = $reader.ReadToEnd()
+            Write-Error "Response Body: $responseBody"
+        }
+        catch {
+            Write-Error "Could not read error response body: $_"
+        }
+        
+        throw
+    }
+}
+
+#-----------------------------------------------------------
+# CRUD Operations
+#-----------------------------------------------------------
+
+function Test-SharePointCRUD {
+    param (
+        [string]$AccessToken
+    )
+    
+    Write-Host "`n----- Testing SharePoint CRUD Operations -----`n" -ForegroundColor Magenta
+    
+    # 1. Create a test item
+    $newItem = CreateListItem -AccessToken $AccessToken
+    $itemId = $newItem.d.ID
+    Write-Host "Created new item with ID: $itemId" -ForegroundColor Green
+    
+    # 2. Read the item
+    $readItem = ReadListItem -AccessToken $AccessToken -ItemId $itemId
+    Write-Host "Read item successfully:" -ForegroundColor Green
+    $readItem.d | Format-List
+    
+    # 3. Update the item
+    $updatedItem = UpdateListItem -AccessToken $AccessToken -ItemId $itemId
+    Write-Host "Updated item successfully" -ForegroundColor Green
+    
+    # 4. Read the updated item
+    $readUpdatedItem = ReadListItem -AccessToken $AccessToken -ItemId $itemId
+    Write-Host "Read updated item:" -ForegroundColor Green
+    $readUpdatedItem.d | Format-List
+    
+    # 5. Delete the item
+    DeleteListItem -AccessToken $AccessToken -ItemId $itemId
+    Write-Host "Deleted item successfully" -ForegroundColor Green
+    
+    Write-Host "`n----- SharePoint CRUD Operations Completed Successfully -----`n" -ForegroundColor Magenta
+}
+
+function CreateListItem {
+    param (
+        [string]$AccessToken
+    )
+    
+    Write-Host "Creating a new list item..." -ForegroundColor Yellow
+    
+    $listItemType = Get-ListItemType -ListName $listName
+    
+    $body = @{
+        "__metadata" = @{
+            "type" = $listItemType
+        }
+        "Title" = "Test Item created $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+        "Description" = "This is a test item created via PowerShell script using Azure AD app-only authentication"
+    }
+    
+    $endpoint = "web/lists/getbytitle('$listName')/items"
+    return Invoke-SharePointRequest -Method "POST" -Endpoint $endpoint -AccessToken $AccessToken -Body $body
+}
+
+function ReadListItem {
+    param (
+        [string]$AccessToken,
+        [int]$ItemId
+    )
+    
+    Write-Host "Reading list item with ID: $ItemId..." -ForegroundColor Yellow
+    
+    $endpoint = "web/lists/getbytitle('$listName')/items($ItemId)"
+    return Invoke-SharePointRequest -Method "GET" -Endpoint $endpoint -AccessToken $AccessToken
+}
+
+function ReadAllListItems {
+    param (
+        [string]$AccessToken
+    )
+    
+    Write-Host "Reading all list items..." -ForegroundColor Yellow
+    
+    $endpoint = "web/lists/getbytitle('$listName')/items?`$top=100"
+    return Invoke-SharePointRequest -Method "GET" -Endpoint $endpoint -AccessToken $AccessToken
+}
+
+function UpdateListItem {
+    param (
+        [string]$AccessToken,
+        [int]$ItemId
+    )
+    
+    Write-Host "Updating list item with ID: $ItemId..." -ForegroundColor Yellow
+    
+    $listItemType = Get-ListItemType -ListName $listName
+    
+    $body = @{
+        "__metadata" = @{
+            "type" = $listItemType
+        }
+        "Title" = "Updated Test Item $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+        "Description" = "This item was updated via PowerShell script using Azure AD app-only authentication"
+    }
+    
+    $endpoint = "web/lists/getbytitle('$listName')/items($ItemId)"
+    return Invoke-SharePointRequest -Method "PATCH" -Endpoint $endpoint -AccessToken $AccessToken -Body $body
+}
+
+function DeleteListItem {
+    param (
+        [string]$AccessToken,
+        [int]$ItemId
+    )
+    
+    Write-Host "Deleting list item with ID: $ItemId..." -ForegroundColor Yellow
+    
+    $endpoint = "web/lists/getbytitle('$listName')/items($ItemId)"
+    return Invoke-SharePointRequest -Method "DELETE" -Endpoint $endpoint -AccessToken $AccessToken
+}
+
+function Get-ListItemType {
+    param (
+        [string]$ListName
+    )
+    
+    # Convert list name to proper format for metadata type
+    $listNameNoSpaces = $ListName -replace ' ', '_x0020_'
+    return "SP.Data.${listNameNoSpaces}ListItem"
+}
+
+#-----------------------------------------------------------
+# Main Execution
+#-----------------------------------------------------------
+
+# Ensure certificate password is secure
+$securePassword = ConvertTo-SecureString -String $certificatePassword -AsPlainText -Force
+
+try {
+    # Get access token
+    $accessToken = Get-AccessToken -TenantId $tenantId -ClientId $clientId -CertificatePath $certificatePath -CertificatePassword $securePassword
+    
+    # Test CRUD operations
+    Test-SharePointCRUD -AccessToken $accessToken
+    
+    # Disconnect from PnP when done
+    Disconnect-PnPOnline
+}
+catch {
+    Write-Error "Error in main script execution: $_"
+}
+
