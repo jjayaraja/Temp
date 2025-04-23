@@ -1,3 +1,17 @@
+$pfxPath = "C:\Path\To\cert.pfx"
+$pfxPassword = ConvertTo-SecureString "YourPfxPassword" -AsPlainText -Force
+
+# Use the constructor with parameters instead of .Import()
+$cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(
+    $pfxPath,
+    $pfxPassword,
+    [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable `
+    -bor [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::MachineKeySet
+)
+
+$privateKey = $cert.GetRSAPrivateKey()
+
+
 2
 
 # Base64Url encoder
