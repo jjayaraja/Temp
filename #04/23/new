@@ -1,0 +1,39 @@
+<#
+.SYNOPSIS
+  A PowerShell script to test SharePoint API CRUD operations using Azure AD app registration with sites.selected permission.
+
+.DESCRIPTION
+  This script demonstrates how to:
+  1. Authenticate to SharePoint using Azure AD app registration with certificate
+  2. Perform CRUD operations on a SharePoint list
+#>
+
+#-----------------------------------------------------------
+# Configuration - Update these values with your own details
+#-----------------------------------------------------------
+$tenantId = "your-tenant-id"                             # Your tenant ID (GUID)
+$clientId = "your-client-id"                             # Your Azure AD app registration client ID
+$certificatePath = "C:\path\to\your\certificate.pfx"     # Path to your PFX certificate
+$certificatePassword = "your-certificate-password"       # Password for your certificate
+$tenantName = "yourtenant"                               # Your tenant name (the part before .sharepoint.com)
+$sitePath = "/sites/yoursite"                            # Path to your SharePoint site
+$listName = "YourListName"                               # Name of the SharePoint list
+
+# SharePoint specific URLs
+$sharepointSiteUrl = "https://$tenantName.sharepoint.com$sitePath"
+$sharepointResource = "https://$tenantName.sharepoint.com"  # This is the critical part for fixing the audience validation error
+
+#-----------------------------------------------------------
+# Helper Functions
+#-----------------------------------------------------------
+
+function Get-SharePointAccessToken {
+    param (
+        [string]$TenantId,
+        [string]$ClientId,
+        [string]$CertificatePath,
+        [string]$CertificatePassword,
+        [string]$Resource
+    )
+    
+    Write-Host "Acquiring SharePoint-specific access token..." -
