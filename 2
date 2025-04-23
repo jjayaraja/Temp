@@ -1,0 +1,80 @@
+2
+
+# Base64Url encoder
+function ConvertTo-Base64Url($input) {
+    return [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($input)).TrimEnd("=").Replace("+", "-").Replace("/", "_")
+}
+
+function To-UnixTime($datetime) {
+    return [int][double]::Parse(($datetime.ToUniversalTime() - [datetime]'1970-01-01').TotalSeconds)
+}
+
+$tenantId = "<your-tenant-id>"
+$clientId = "<your-client-id>"
+$aud = "https://login.microsoftonline.com/$tenantId/oauth2/v2.0/token"
+
+# Unix timestamps
+$now = Get-Date
+$exp = To-UnixTime($now.AddMinutes(10))
+$nbf = To-UnixTime($now)
+$jti = [guid]::NewGuid().ToString()
+
+# JWT Header
+$thumbprint = [Convert]::ToBase64String($cert.GetCertHash("SHA256")) -replace '\+', '-' -replace '/', '_' -replace '='
+$jwtHeader = @{ alg = "RS256"; "x5t#S256" = $thumbprint }
+
+# JWT Payload
+$jwtPayload = @{
+    aud = $aud
+    iss = $clientId
+    sub = $clientId
+    exp = $exp
+    nbf = $nbf
+    jti = $jti
+}
+
+# Convert to JSON then Base64Url encode
+$headerEncoded = ConvertTo-Base64Url (ConvertTo-Json $jwtHeader -Compress)
+$payloadEncoded = ConvertTo-Base64Url (ConvertTo-Json $jwtPayload -Compress)
+$tokenToSign = "$headerEncoded.$payloadEncoded"
+
+
+
+
+3
+
+# Load the private key for signing
+$privateKey = $cert.GetRSAPrivateKey()
+
+# Sign the token (RS256 = SHA256withRSA)
+$signature = $privateKey.SignData(
+    [System.Text.Encoding]::UTF8.GetBytes($tokenToSign),
+    [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+    [System.Security.Cryptography.RSASignaturePadding]::Pkcs1
+)
+
+# Encode signature
+$signatureEncoded = [Convert]::ToBase64String($signature).TrimEnd("=").Replace("+", "-").Replace("/", "_")
+
+# Final client assertion
+$clientAssertion = "$tokenToSign.$signatureEncoded"
+
+
+4
+$tokenEndpoint = "https://login.microsoftonline.com/$tenantId/oauth2/v2.0/token"
+$scope = "https://<yourtenant>.sharepoint.com/.default"
+
+$body = @{
+    client_id             = $clientId
+    scope                 = $scope
+    grant_type            = "client_credentials"
+    client_assertion_type = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+    client_assertion      = $clientAssertion
+}
+
+$response = Invoke-RestMethod -Uri $tokenEndpoint -Method Post -ContentType 'application/x-www-form-urlencoded' -Body $body
+$accessToken = $response.access_token
+Write-Output "Access Token:"
+Write-Output $accessToken
+
+
