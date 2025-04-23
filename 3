@@ -1,0 +1,44 @@
+// You'll need to add the forge library in Postman settings
+// Settings > Libraries > Add > crypto-js and jsrsasign
+
+// Set your values
+const clientId = "your-client-id"; // Your Azure AD app ID
+const tenantId = "your-tenant-id"; // Your tenant ID
+const certificateThumbprint = "your-certificate-thumbprint-base64"; // Certificate thumbprint in base64
+const pfxBase64 = "your-pfx-in-base64"; // Your PFX converted to base64
+const pfxPassword = "your-pfx-password"; // Your PFX password
+
+// Create JWT headers
+const headers = {
+    "alg": "RS256",
+    "typ": "JWT",
+    "x5t": certificateThumbprint
+};
+
+// Create JWT payload
+const now = Math.floor(Date.now() / 1000);
+const payload = {
+    "aud": `https://login.microsoftonline.com/${tenantId}/oauth2/token`,
+    "exp": now + 3600,
+    "iss": clientId,
+    "jti": pm.variables.replaceIn("{{$guid}}"),
+    "nbf": now,
+    "sub": clientId
+};
+
+// Load certificate and create signature
+const key = KEYUTIL.getKeyFromPKCS12(
+    b64tohex(pfxBase64),
+    pfxPassword
+);
+
+// Sign JWT
+const jwt = KJUR.jws.JWS.sign(
+    "RS256",
+    JSON.stringify(headers),
+    JSON.stringify(payload),
+    key
+);
+
+// Set as environment variable
+pm.environment.set("client_assertion", jwt);
