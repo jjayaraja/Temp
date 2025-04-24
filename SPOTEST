@@ -1,8 +1,47 @@
-# Require PnP PowerShell Module
-# Install-Module -Name PnP.PowerShell
-
-$script:siteUrl = "https://contoso.sharepoint.com/sites/yoursite"
-
+clear
+$script:siteUrl = "https://xxx.sharepoint.com/sites/xxx/xxx"
+$script:clientId = "xxxx"   
+$script:tenantId = "xxxx"  
+$script:certificatePath = "C:\temp\certxxx.pfx" 
+$script:certificatePassword = "xxxx" 
+$script:testListName="PnPTestList"
+$script:testLibName="PnPTestLibrary"
+$script:testFileName="testDoc.txt"
+$script:testFilePath="C:\temp"
+$script:sitePath = "/sites/xxxx/xxxx" 
+$script:testFolderName="New Folder 1"
+function Invoke-Cleanup {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$ListTitle,
+        [Parameter(Mandatory=$true)]
+        [string]$LibraryName
+    )
+    
+    try {
+        # Cleanup List
+        $list = Get-PnPList -Identity $ListTitle -ErrorAction SilentlyContinue
+        if($list) {
+            Remove-PnPList -Identity $ListTitle -Force
+            Write-Host "Test Type: Cleanup List | Status: Success" -ForegroundColor Green
+        }
+        
+        # Cleanup Document Library and Folder
+        $library = Get-PnPList -Identity $LibraryName -ErrorAction SilentlyContinue
+        if($library) {
+            
+            # Delete library
+            Remove-PnPList -Identity $LibraryName -Force
+            Write-Host "Test Type: Cleanup Library | Status: Success" -ForegroundColor Green
+        }
+        
+        return $true
+    }
+    catch {
+        Write-Host "Test Type: Cleanup | Status: Failed | Error: $_" -ForegroundColor Red
+        return $false
+    }
+}
 function Connect-ToSharePoint {
     param(
         [Parameter(Mandatory=$true)]
@@ -36,7 +75,7 @@ function Create-TestList {
     try {
         $list = Get-PnPList -Identity $ListTitle -ErrorAction SilentlyContinue
         if(-not $list) {
-            $list = New-PnPList -Title $ListTitle -Template GenericList -EnableVersioning $true
+            $list = New-PnPList -Title $ListTitle -Template GenericList
             Write-Host "Test Type: Create List | Status: Success" -ForegroundColor Green
         }
         else {
@@ -174,9 +213,9 @@ function Delete-Document {
     )
     
     try {
-        $file = Get-PnPFile -Url "/sites/yoursite/$LibraryName/$FileName" -ErrorAction SilentlyContinue
+        $file = Get-PnPFile -Url "$sitePath/$LibraryName/$FileName" -ErrorAction SilentlyContinue
         if($file) {
-            Remove-PnPFile -ServerRelativeUrl $file.ServerRelativeUrl -Force
+            Remove-PnPFile -ServerRelativeUrl "$sitePath/$LibraryName/$FileName"  -Force
             Write-Host "Test Type: Delete Document | Status: Success" -ForegroundColor Green
             return $true
         }
@@ -187,68 +226,111 @@ function Delete-Document {
         return $false
     }
 }
-
-# Example Usage
-# Replace these values with your actual certificate information
-$connectionStatus = Connect-ToSharePoint -ClientId "your-client-id" -TenantId "your-tenant-id" -CertificatePath "C:\path\to\cert.pfx" -CertificatePassword "cert-password"
-
-if($connectionStatus) {
-    # List Tests
-    $testListName = "PnPTestList"
-    Create-TestList -ListTitle $testListName
-    $newItem = Create-ListItem -ListTitle $testListName -Title "Test Item"
-    if($newItem) {
-        Update-ListItem -ListTitle $testListName -ItemId 1 -NewTitle "Updated Test Item"
-        Delete-ListItem -ListTitle $testListName -ItemId 1
-    }
-    
-    # Document Library Tests
-    $testLibName = "PnPTestLibrary"
-    Create-DocumentLibrary -LibraryName $testLibName
-    Upload-TestDocument -LibraryName $testLibName -FilePath "C:\temp\testdoc.txt"
-    Delete-Document -LibraryName $testLibName -FileName "testdoc.txt"
-}
-
-# Disconnect from SharePoint
-Disconnect-PnPOnline
-
-
-
-
-function Invoke-Cleanup {
+function Create-TestFolder {
     param(
         [Parameter(Mandatory=$true)]
-        [string]$ListTitle,
+        [string]$LibraryName,
         [Parameter(Mandatory=$true)]
-        [string]$LibraryName
+        [string]$FolderName
     )
     
     try {
-        # Cleanup List
-        $list = Get-PnPList -Identity $ListTitle -ErrorAction SilentlyContinue
-        if($list) {
-            Remove-PnPList -Identity $ListTitle -Force
-            Write-Host "Test Type: Cleanup List | Status: Success" -ForegroundColor Green
-        }
+        $library = Get-PnPList -Identity $LibraryName -ErrorAction Stop
+        $libraryRoot = $library.RootFolder.ServerRelativeUrl
+        $folderPath = "$libraryRoot/$FolderName"
         
-        # Cleanup Document Library
-        $library = Get-PnPList -Identity $LibraryName -ErrorAction SilentlyContinue
-        if($library) {
-            Remove-PnPList -Identity $LibraryName -Force
-            Write-Host "Test Type: Cleanup Library | Status: Success" -ForegroundColor Green
+        $folder = Get-PnPFolder -Url $folderPath -ErrorAction SilentlyContinue
+        if(-not $folder) {
+            Add-PnPFolder -Name $FolderName -Folder $libraryRoot | Out-Null
+            Write-Host "Test Type: Create Folder | Status: Success" -ForegroundColor Green
         }
-        
+        else {
+            Write-Host "Test Type: Create Folder | Status: Success (Already Exists)" -ForegroundColor Yellow
+        }
         return $true
     }
     catch {
-        Write-Host "Test Type: Cleanup | Status: Failed | Error: $_" -ForegroundColor Red
+        Write-Host "Test Type: Create Folder | Status: Failed | Error: $_" -ForegroundColor Red
         return $false
     }
 }
 
+function Get-TestFolder {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$LibraryName,
+        [Parameter(Mandatory=$true)]
+        [string]$FolderName
+    )
+    
+    try {
+        $library = Get-PnPList -Identity $LibraryName -ErrorAction Stop
+        $libraryRoot = $library.RootFolder.ServerRelativeUrl
+        $folderPath = "$libraryRoot/$FolderName"
+        
+        $folder = Get-PnPFolder -Url $folderPath -ErrorAction Stop
+        Write-Host "Test Type: Get Folder | Status: Success" -ForegroundColor Green
+        return $true
+    }
+    catch {
+        Write-Host "Test Type: Get Folder | Status: Failed | Error: $_" -ForegroundColor Red
+        return $false
+    }
+}
 
-# Example Usage
-$connectionStatus = Connect-ToSharePoint -ClientId "your-client-id" -TenantId "your-tenant-id" -CertificatePath "C:\path\to\cert.pfx" -CertificatePassword "cert-password"
+function Delete-TestFolder {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$LibraryName,
+        [Parameter(Mandatory=$true)]
+        [string]$FolderName
+    )
+    
+    try {
+        $library = Get-PnPList -Identity $LibraryName -ErrorAction SilentlyContinue
+        if($library) {
+            $libraryRoot = $library.RootFolder.ServerRelativeUrl
+            $folderPath = "$libraryRoot/$FolderName"
+            
+            $folder = Get-PnPFolder -Url $folderPath -ErrorAction SilentlyContinue
+            if($folder) {
+                Remove-PnPFolder -Name $FolderName -Folder  $libraryRoot -Force -ErrorAction Stop
+                Write-Host "Test Type: Delete Folder | Status: Success" -ForegroundColor Green
+            }
+            else {
+                Write-Host "Test Type: Delete Folder | Status: Success (Not Found)" -ForegroundColor Yellow
+            }
+        }
+        return $true
+    }
+    catch {
+        Write-Host "Test Type: Delete Folder | Status: Failed | Error: $_" -ForegroundColor Red
+        return $false
+    }
+}
+
+# function Create-FolderInDocLibrary{
+#     param(
+#         [Parameter(Mandatory=$true)]
+#         [string]$FolderName,
+#         [Parameter(Mandatory=$true)]
+#         [string]$LibraryName
+#     )
+    
+#     try {
+#         $folderCreated= Add-PnPFolder -name $FolderName -Folder $LibraryName
+#         if($folderCreated) {
+#             Write-Host "Test Type: Folder Creation | Status: Success" -ForegroundColor Green
+#             return $true
+#         }
+#         throw "Folder Not Created"
+#     }
+#     catch {
+#         Write-Host "Test Type: Folder Creation | Status: Failed | Error: $_" -ForegroundColor Red
+#         return $false
+#     }
+# }
+$connectionStatus = Connect-ToSharePoint -ClientId $clientId -TenantId $tenantId -CertificatePath $certificatePath -CertificatePassword $certificatePassword
 
 if($connectionStatus) {
     # List Tests
@@ -262,9 +344,20 @@ if($connectionStatus) {
     
     # Document Library Tests
     Create-DocumentLibrary -LibraryName $testLibName
-    Upload-TestDocument -LibraryName $testLibName -FilePath "C:\temp\$testFileName"
+
+     # Folder Tests
+     Create-TestFolder -LibraryName $testLibName -FolderName $testFolderName
+     Get-TestFolder -LibraryName $testLibName -FolderName $testFolderName
+     Delete-TestFolder -LibraryName $testLibName -FolderName $testFolderName
+
+
+    # Create-FolderInDocLibrary -FolderName $testFolderName -LibraryName $testLibName
+    #file Tests
+    Upload-TestDocument -LibraryName $testLibName -FilePath "$TestFilePath\$testFileName"
     Delete-Document -LibraryName $testLibName -FileName $testFileName
 }
+
+
 
 # Prompt for cleanup
 $cleanupChoice = Read-Host -Prompt "Do you want to perform cleanup? This will delete '$testListName' list and '$testLibName' library. (Y/N)"
