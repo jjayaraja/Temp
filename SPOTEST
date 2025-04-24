@@ -211,3 +211,69 @@ if($connectionStatus) {
 
 # Disconnect from SharePoint
 Disconnect-PnPOnline
+
+
+
+
+function Invoke-Cleanup {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$ListTitle,
+        [Parameter(Mandatory=$true)]
+        [string]$LibraryName
+    )
+    
+    try {
+        # Cleanup List
+        $list = Get-PnPList -Identity $ListTitle -ErrorAction SilentlyContinue
+        if($list) {
+            Remove-PnPList -Identity $ListTitle -Force
+            Write-Host "Test Type: Cleanup List | Status: Success" -ForegroundColor Green
+        }
+        
+        # Cleanup Document Library
+        $library = Get-PnPList -Identity $LibraryName -ErrorAction SilentlyContinue
+        if($library) {
+            Remove-PnPList -Identity $LibraryName -Force
+            Write-Host "Test Type: Cleanup Library | Status: Success" -ForegroundColor Green
+        }
+        
+        return $true
+    }
+    catch {
+        Write-Host "Test Type: Cleanup | Status: Failed | Error: $_" -ForegroundColor Red
+        return $false
+    }
+}
+
+
+# Example Usage
+$connectionStatus = Connect-ToSharePoint -ClientId "your-client-id" -TenantId "your-tenant-id" -CertificatePath "C:\path\to\cert.pfx" -CertificatePassword "cert-password"
+
+if($connectionStatus) {
+    # List Tests
+    Create-TestList -ListTitle $testListName
+    $newItem = Create-ListItem -ListTitle $testListName -Title "Test Item"
+    
+    if($newItem) {
+        Update-ListItem -ListTitle $testListName -ItemId 1 -NewTitle "Updated Test Item"
+        Delete-ListItem -ListTitle $testListName -ItemId 1
+    }
+    
+    # Document Library Tests
+    Create-DocumentLibrary -LibraryName $testLibName
+    Upload-TestDocument -LibraryName $testLibName -FilePath "C:\temp\$testFileName"
+    Delete-Document -LibraryName $testLibName -FileName $testFileName
+}
+
+# Prompt for cleanup
+$cleanupChoice = Read-Host -Prompt "Do you want to perform cleanup? This will delete '$testListName' list and '$testLibName' library. (Y/N)"
+if($cleanupChoice -eq 'Y' -or $cleanupChoice -eq 'y') {
+    Invoke-Cleanup -ListTitle $testListName -LibraryName $testLibName
+}
+else {
+    Write-Host "Cleanup skipped. Test resources preserved." -ForegroundColor Yellow
+}
+
+# Disconnect from SharePoint
+Disconnect-PnPOnline
