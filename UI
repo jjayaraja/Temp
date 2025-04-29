@@ -1,0 +1,129 @@
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+# Main Form
+$form = New-Object System.Windows.Forms.Form
+$form.Text = "SharePoint Library Manager"
+$form.Size = New-Object System.Drawing.Size(800, 500)
+$form.StartPosition = "CenterScreen"
+
+# URL Input
+$urlLabel = New-Object System.Windows.Forms.Label
+$urlLabel.Location = New-Object System.Drawing.Point(10, 20)
+$urlLabel.Size = New-Object System.Drawing.Size(100, 20)
+$urlLabel.Text = "Site URL:"
+$form.Controls.Add($urlLabel)
+
+$urlTextBox = New-Object System.Windows.Forms.TextBox
+$urlTextBox.Location = New-Object System.Drawing.Point(120, 20)
+$urlTextBox.Size = New-Object System.Drawing.Size(400, 20)
+$form.Controls.Add($urlTextBox)
+
+# Go Button
+$goButton = New-Object System.Windows.Forms.Button
+$goButton.Location = New-Object System.Drawing.Point(530, 20)
+$goButton.Size = New-Object System.Drawing.Size(75, 23)
+$goButton.Text = "Go"
+$form.Controls.Add($goButton)
+
+# Libraries ListBox
+$listBox = New-Object System.Windows.Forms.ListBox
+$listBox.Location = New-Object System.Drawing.Point(10, 60)
+$listBox.Size = New-Object System.Drawing.Size(300, 350)
+$listBox.SelectionMode = "MultiExtended"
+$form.Controls.Add($listBox)
+
+# Options Panel
+$optionsPanel = New-Object System.Windows.Forms.GroupBox
+$optionsPanel.Location = New-Object System.Drawing.Point(320, 60)
+$optionsPanel.Size = New-Object System.Drawing.Size(450, 200)
+$optionsPanel.Text = "Library Options"
+$form.Controls.Add($optionsPanel)
+
+# Client App Feature Checkbox
+$clientAppCheckbox = New-Object System.Windows.Forms.CheckBox
+$clientAppCheckbox.Location = New-Object System.Drawing.Point(20, 30)
+$clientAppCheckbox.Size = New-Object System.Drawing.Size(400, 20)
+$clientAppCheckbox.Text = "Enable Client Application Service (Site Feature)"
+$optionsPanel.Controls.Add($clientAppCheckbox)
+
+# Custom App Checkbox
+$customAppCheckbox = New-Object System.Windows.Forms.CheckBox
+$customAppCheckbox.Location = New-Object System.Drawing.Point(20, 60)
+$customAppCheckbox.Size = New-Object System.Drawing.Size(400, 20)
+$customAppCheckbox.Text = "Add Custom App '123333'"
+$optionsPanel.Controls.Add($customAppCheckbox)
+
+# Sync Options Checkboxes
+$syncCheckbox = New-Object System.Windows.Forms.CheckBox
+$syncCheckbox.Location = New-Object System.Drawing.Point(20, 90)
+$syncCheckbox.Size = New-Object System.Drawing.Size(400, 20)
+$syncCheckbox.Text = "Enable Offline Sync for Selected Libraries"
+$optionsPanel.Controls.Add($syncCheckbox)
+
+# Apply Button
+$applyButton = New-Object System.Windows.Forms.Button
+$applyButton.Location = New-Object System.Drawing.Point(320, 270)
+$applyButton.Size = New-Object System.Drawing.Size(100, 30)
+$applyButton.Text = "Apply Changes"
+$form.Controls.Add($applyButton)
+
+# Event Handlers
+$goButton.Add_Click({
+    try {
+        Connect-PnPOnline -Url $urlTextBox.Text -Interactive -ErrorAction Stop
+        $libraries = Get-PnPList -Includes BaseTemplate | Where-Object { $_.BaseTemplate -eq 101 }
+        $listBox.Items.Clear()
+        foreach ($lib in $libraries) {
+            $listBox.Items.Add($lib.Title)
+        }
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show("Error connecting to site: $_", "Error")
+    }
+})
+
+$applyButton.Add_Click({
+    if ($listBox.SelectedItems.Count -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show("Please select at least one library", "Warning")
+        return
+    }
+
+    try {
+        Connect-PnPOnline -Url $urlTextBox.Text -Interactive -ErrorAction Stop
+
+        # Process site features
+        if ($clientAppCheckbox.Checked) {
+            Enable-PnPFeature -Identity "8a4b8de2-6fd8-41e9-923c-c7c3c00f8295" -Scope Site -Force
+        }
+
+        # Process custom app
+        if ($customAppCheckbox.Checked) {
+            try {
+                Add-PnPApp -Title "123333" -ErrorAction Stop
+            }
+            catch {
+                Write-Host "App might already exist or error occurred: $_"
+            }
+        }
+
+        # Process selected libraries
+        foreach ($libraryTitle in $listBox.SelectedItems) {
+            $library = Get-PnPList -Identity $libraryTitle
+            if ($syncCheckbox.Checked) {
+                Set-PnPList -Identity $library -OfflineClientAvailability Enabled
+            }
+            else {
+                Set-PnPList -Identity $library -OfflineClientAvailability Disabled
+            }
+        }
+
+        [System.Windows.Forms.MessageBox]::Show("Settings applied successfully!", "Success")
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show("Error applying settings: $_", "Error")
+    }
+})
+
+# Show the form
+$form.ShowDialog()
