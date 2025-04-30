@@ -105,7 +105,77 @@ function Update-SiteToggles {
     }
 }
 
-[xml]$xaml = @" ... "@
+[xml]$xaml = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        Title="SharePoint Library Manager" Height="600" Width="800">
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="100"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+            <Label Content="SharePoint Site URL:" Width="150" VerticalAlignment="Center"/>
+            <TextBox Name="txtSiteUrl" Width="500"/>
+            <Button Name="btnGo" Content="Go" Width="80" Margin="10,0,0,0"/>
+        </StackPanel>
+
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="2*"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <ListBox Name="lstLibraries" SelectionMode="Extended" Grid.Column="0"/>
+
+            <StackPanel Grid.Column="1" Margin="10,0,0,0">
+                <GroupBox Header="Library Settings">
+                    <StackPanel>
+                        <Label Content="Sync with OneDrive:"/>
+                        <StackPanel Orientation="Horizontal">
+                            <RadioButton Name="rbSyncYes" Content="Yes" GroupName="sync"/>
+                            <RadioButton Name="rbSyncNo" Content="No" GroupName="sync" Margin="10,0,0,0"/>
+                        </StackPanel>
+                        <Label Content="Access Without Internet:" Margin="0,10,0,0"/>
+                        <StackPanel Orientation="Horizontal">
+                            <RadioButton Name="rbOfflineYes" Content="Yes" GroupName="offline"/>
+                            <RadioButton Name="rbOfflineNo" Content="No" GroupName="offline" Margin="10,0,0,0"/>
+                        </StackPanel>
+                        <Button Name="btnApplyLibrary" Content="Apply Library Changes" Margin="0,10,0,0"/>
+                    </StackPanel>
+                </GroupBox>
+
+                <GroupBox Header="Site Settings" Margin="0,20,0,0">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal">
+                            <Label Content="Disable Sync App:" Width="180"/>
+                            <RadioButton Name="rbDisableSyncYes" Content="Yes" GroupName="syncApp"/>
+                            <RadioButton Name="rbDisableSyncNo" Content="No" GroupName="syncApp" Margin="10,0,0,0"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                            <Label Content="Default Client App:" Width="180"/>
+                            <RadioButton Name="rbClientYes" Content="Yes" GroupName="clientApp"/>
+                            <RadioButton Name="rbClientNo" Content="No" GroupName="clientApp" Margin="10,0,0,0"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                            <Label Content="Site Offline Availability:" Width="180"/>
+                            <RadioButton Name="rbSiteOfflineYes" Content="Yes" GroupName="offlineAvail"/>
+                            <RadioButton Name="rbSiteOfflineNo" Content="No" GroupName="offlineAvail" Margin="10,0,0,0"/>
+                        </StackPanel>
+                        <Button Name="btnApplySite" Content="Apply Site Changes" Margin="0,10,0,0"/>
+                    </StackPanel>
+                </GroupBox>
+            </StackPanel>
+        </Grid>
+
+        <DockPanel Grid.Row="2" Margin="0,10,0,0">
+            <TextBox Name="txtLog" Height="80" VerticalScrollBarVisibility="Auto" TextWrapping="Wrap" AcceptsReturn="True" IsReadOnly="True" DockPanel.Dock="Top"/>
+            <Button Name="btnExit" Content="Exit" Width="80" Height="30" HorizontalAlignment="Right" Margin="0,5,0,0" DockPanel.Dock="Bottom"/>
+        </DockPanel>
+    </Grid>
+</Window>
+"@
 
 $reader = (New-Object System.Xml.XmlNodeReader $xaml)
 $window = [Windows.Markup.XamlReader]::Load($reader)
