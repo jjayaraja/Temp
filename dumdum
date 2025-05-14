@@ -1,39 +1,44 @@
 1. Export Navigation to CSV
 powershell
 # Export Navigation Nodes to CSV
-Connect-PnPOnline -Url "https://contoso.sharepoint.com/sites/sourcehub" -Interactive
+$exportPath = ".\TopNavigationExport.csv"
 
-$TopNavNodes = Get-PnPNavigationNode -Location TopNavigationBar
-$QuickLaunchNodes = Get-PnPNavigationNode -Location QuickLaunch
+Connect-PnPOnline -Url $sourceSite -Interactive
 
-function Process-Nodes {
+# Get all top navigation nodes with hierarchy
+$navigationNodes = Get-PnPNavigationNode -Location TopNavigationBar -Tree
+
+$navCollection = @()
+$order = 1
+
+function Process-Node {
     param(
-        [Microsoft.SharePoint.Client.NavigationNode]$Node,
-        [string]$NavigationType,
-        [int]$ParentNodeId
+        $node,
+        $parentTitle,
+        $level
     )
     
-    $NodeData = [PSCustomObject]@{
-        Title            = $Node.Title
-        Url              = $Node.Url
-        IsExternal       = $Node.IsExternal
-        NavigationType   = $NavigationType
-        ParentNodeId     = $ParentNodeId
-        SourceNodeId     = $Node.Id
+    $navItem = [PSCustomObject]@{
+        Title        = $node.Title
+        Url          = $node.Url
+        ParentTitle  = $parentTitle
+        Level        = "Level $level"
+        Order        = $order
     }
-    $Script:NavigationData += $NodeData
-
-    foreach ($Child in $Node.Children) {
-        Process-Nodes -Node $Child -NavigationType $NavigationType -ParentNodeId $Node.Id
+    
+    $script:navCollection += $navItem
+    $script:order++
+    
+    foreach($child in $node.Children) {
+        Process-Node -node $child -parentTitle $node.Title -level ($level+1)
     }
 }
 
-# Process nodes
-foreach ($Node in $TopNavNodes) { Process-Nodes $Node "TopNavigationBar" $null }
-foreach ($Node in $QuickLaunchNodes) { Process-Nodes $Node "QuickLaunch" $null }
+foreach($node in $navigationNodes) {
+    Process-Node -node $node -parentTitle "" -level 1
+}
 
-$NavigationData | Export-Csv -Path "NavigationExport.csv" -NoTypeInformation
-Write-Host "Exported navigation with ParentNodeId and SourceNodeId!"
+$navCollection | Export-Csv -Path $exportPath -NoTypeInformation
 
 
 
