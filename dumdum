@@ -8,7 +8,6 @@ $QuickLaunchNodes = Get-PnPNavigationNode -Location QuickLaunch
 
 $NavigationData = @()
 
-# Function to process nodes recursively
 function Process-Nodes {
     param(
         [Microsoft.SharePoint.Client.NavigationNode]$Node,
@@ -16,6 +15,7 @@ function Process-Nodes {
         [string]$ParentNodeTitle
     )
     
+    # Add current node to CSV
     $NodeData = [PSCustomObject]@{
         Title            = $Node.Title
         Url              = $Node.Url
@@ -25,10 +25,9 @@ function Process-Nodes {
     }
     $Script:NavigationData += $NodeData
 
-    if ($Node.Children.Count -gt 0) {
-        foreach ($ChildNode in $Node.Children) {
-            Process-Nodes -Node $ChildNode -NavigationType $NavigationType -ParentNodeTitle $Node.Title
-        }
+    # Process children recursively (already loaded via -Tree)
+    foreach ($Child in $Node.Children) {
+        Process-Nodes -Node $Child -NavigationType $NavigationType -ParentNodeTitle $Node.Title
     }
 }
 
@@ -44,7 +43,7 @@ foreach ($Node in $QuickLaunchNodes) {
 
 # Export to CSV
 $NavigationData | Export-Csv -Path "NavigationExport.csv" -NoTypeInformation
-Write-Host "Navigation exported to NavigationExport.csv"
+Write-Host "Navigation (including children) exported to NavigationExport.csv"
 
 
 
