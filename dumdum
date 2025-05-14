@@ -3,10 +3,8 @@ powershell
 # Export Navigation Nodes to CSV
 $exportPath = ".\TopNavigationExport.csv"
 
-Connect-PnPOnline -Url $sourceSite -Interactive
-
-# Get all top navigation nodes with hierarchy
-$navigationNodes = Get-PnPNavigationNode -Location TopNavigationBar -Tree
+$rootNode = Get-PnPNavigationNode -Location TopNavigationBar -Tree
+$topLevelNodes = $rootNode.Children
 
 $navCollection = @()
 $order = 1
@@ -15,30 +13,32 @@ function Process-Node {
     param(
         $node,
         $parentTitle,
-        $level
+        $currentLevel
     )
     
     $navItem = [PSCustomObject]@{
         Title        = $node.Title
         Url          = $node.Url
         ParentTitle  = $parentTitle
-        Level        = "Level $level"
+        Level        = $currentLevel
         Order        = $order
     }
     
     $script:navCollection += $navItem
     $script:order++
     
+    # Process children recursively
     foreach($child in $node.Children) {
-        Process-Node -node $child -parentTitle $node.Title -level ($level+1)
+        Process-Node -node $child -parentTitle $node.Title -currentLevel ($currentLevel + 1)
     }
 }
 
-foreach($node in $navigationNodes) {
-    Process-Node -node $node -parentTitle "" -level 1
+# Start processing from actual top-level nodes (level 1)
+foreach($node in $topLevelNodes) {
+    Process-Node -node $node -parentTitle $null -currentLevel 1
 }
 
-$navCollection | Export-Csv -Path $exportPath -NoTypeInformation
+$navCollection | Export-Csv -Path $exportPath -NoTypeInformation -Force
 
 
 
