@@ -6,45 +6,34 @@ Connect-PnPOnline -Url "https://contoso.sharepoint.com/sites/sourcehub" -Interac
 $TopNavNodes = Get-PnPNavigationNode -Location TopNavigationBar
 $QuickLaunchNodes = Get-PnPNavigationNode -Location QuickLaunch
 
-$NavigationData = @()
-
 function Process-Nodes {
     param(
         [Microsoft.SharePoint.Client.NavigationNode]$Node,
         [string]$NavigationType,
-        [string]$ParentNodeTitle
+        [int]$ParentNodeId
     )
     
-    # Add current node to CSV
     $NodeData = [PSCustomObject]@{
         Title            = $Node.Title
         Url              = $Node.Url
         IsExternal       = $Node.IsExternal
         NavigationType   = $NavigationType
-        ParentNodeTitle  = $ParentNodeTitle
+        ParentNodeId     = $ParentNodeId
+        SourceNodeId     = $Node.Id
     }
     $Script:NavigationData += $NodeData
 
-    # Fetch CHILD NODES explicitly using Parent ID
-    $ChildNodes = Get-PnPNavigationNode -Location $NavigationType -Parent $Node.Id
-    foreach ($Child in $ChildNodes) {
-        Process-Nodes -Node $Child -NavigationType $NavigationType -ParentNodeTitle $Node.Title
+    foreach ($Child in $Node.Children) {
+        Process-Nodes -Node $Child -NavigationType $NavigationType -ParentNodeId $Node.Id
     }
 }
 
-# Process Top Navigation
-foreach ($Node in $TopNavNodes) {
-    Process-Nodes -Node $Node -NavigationType "TopNavigationBar" -ParentNodeTitle $null
-}
+# Process nodes
+foreach ($Node in $TopNavNodes) { Process-Nodes $Node "TopNavigationBar" $null }
+foreach ($Node in $QuickLaunchNodes) { Process-Nodes $Node "QuickLaunch" $null }
 
-# Process Quick Launch
-foreach ($Node in $QuickLaunchNodes) {
-    Process-Nodes -Node $Node -NavigationType "QuickLaunch" -ParentNodeTitle $null
-}
-
-# Export to CSV
 $NavigationData | Export-Csv -Path "NavigationExport.csv" -NoTypeInformation
-Write-Host "Navigation (including children) exported to NavigationExport.csv"
+Write-Host "Exported navigation with ParentNodeId and SourceNodeId!"
 
 
 
