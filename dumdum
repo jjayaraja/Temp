@@ -1,0 +1,120 @@
+1. Export Navigation to CSV
+powershell
+# Export Navigation Nodes to CSV
+Connect-PnPOnline -Url "https://contoso.sharepoint.com/sites/sourcehub" -Interactive
+
+$TopNavNodes = Get-PnPNavigationNode -Location TopNavigationBar
+$QuickLaunchNodes = Get-PnPNavigationNode -Location QuickLaunch
+
+$NavigationData = @()
+
+# Function to process nodes recursively
+function Process-Nodes {
+    param(
+        [Microsoft.SharePoint.Client.NavigationNode]$Node,
+        [string]$NavigationType,
+        [string]$ParentNodeTitle
+    )
+    
+    $NodeData = [PSCustomObject]@{
+        Title            = $Node.Title
+        Url              = $Node.Url
+        IsExternal       = $Node.IsExternal
+        NavigationType   = $NavigationType
+        ParentNodeTitle  = $ParentNodeTitle
+    }
+    $Script:NavigationData += $NodeData
+
+    if ($Node.Children.Count -gt 0) {
+        foreach ($ChildNode in $Node.Children) {
+            Process-Nodes -Node $ChildNode -NavigationType $NavigationType -ParentNodeTitle $Node.Title
+        }
+    }
+}
+
+# Process Top Navigation
+foreach ($Node in $TopNavNodes) {
+    Process-Nodes -Node $Node -NavigationType "TopNavigationBar" -ParentNodeTitle $null
+}
+
+# Process Quick Launch
+foreach ($Node in $QuickLaunchNodes) {
+    Process-Nodes -Node $Node -NavigationType "QuickLaunch" -ParentNodeTitle $null
+}
+
+# Export to CSV
+$NavigationData | Export-Csv -Path "NavigationExport.csv" -NoTypeInformation
+Write-Host "Navigation exported to NavigationExport.csv"
+
+
+
+
+
+
+  
+2. Import Navigation from CSV
+powershell
+# Import Navigation Nodes from CSV
+Connect-PnPOnline -Url "https://contoso.sharepoint.com/sites/targethub" -Interactive
+
+$ImportedNav = Import-Csv -Path "NavigationExport.csv"
+
+# Import nodes in correct order (parents first)
+foreach ($NavNode in $ImportedNav) {
+    $ParentNode = $null
+    
+    # Find parent node if specified
+    if (-not [string]::IsNullOrEmpty($NavNode.ParentNodeTitle)) {
+        $ParentNode = Get-PnPNavigationNode -Location $NavNode.NavigationType | Where-Object { $_.Title -eq $NavNode.ParentNodeTitle }
+        if (-not $ParentNode) {
+            Write-Warning "Parent node '$($NavNode.ParentNodeTitle)' not found. Skipping child node '$($NavNode.Title)'."
+            continue
+        }
+    }
+
+    # Create new navigation node
+    $NewNodeParams = @{
+        Location  = $NavNode.NavigationType
+        Title     = $NavNode.Title
+        Url       = $NavNode.Url
+        IsExternal= [System.Convert]::ToBoolean($NavNode.IsExternal)
+    }
+
+    if ($ParentNode) {
+        $NewNodeParams.Add("Parent", $ParentNode.Id)
+    }
+
+    Add-PnPNavigationNode @NewNodeParams -ErrorAction Stop
+    Write-Host "Imported node: $($NavNode.Title)"
+}
+
+Write-Host "Navigation import completed!"
+
+
+
+  <#
+Steps to Use:
+Export Navigation:
+
+Run the first script after replacing the source hub URL.
+
+Authenticate interactively.
+
+A NavigationExport.csv file will be generated.
+
+Import Navigation:
+
+Run the second script after replacing the target hub URL.
+
+Ensure the CSV file is in the same directory.
+
+The script recreates the navigation structure with parent-child relationships.
+
+Notes:
+Order Matters: The CSV must list parent nodes before their children.
+
+URL Adjustments: Update URLs in the CSV if the target site has a different base URL.
+
+Permissions: Requires Site Owner permissions on both sites.
+
+PnP Modules: Install with Install-Module -Name PnP.PowerShell. #>
