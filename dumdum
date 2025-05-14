@@ -25,8 +25,9 @@ function Process-Nodes {
     }
     $Script:NavigationData += $NodeData
 
-    # Process children recursively (already loaded via -Tree)
-    foreach ($Child in $Node.Children) {
+    # Fetch CHILD NODES explicitly using Parent ID
+    $ChildNodes = Get-PnPNavigationNode -Location $NavigationType -Parent $Node.Id
+    foreach ($Child in $ChildNodes) {
         Process-Nodes -Node $Child -NavigationType $NavigationType -ParentNodeTitle $Node.Title
     }
 }
