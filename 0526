@@ -19,19 +19,16 @@ try {
         throw "Library '$LibraryName' not found!"
     }
 
-    # Get all items with unique permissions (faster than checking each item)
-    Write-Host "Retrieving items with unique permissions..." -ForegroundColor Yellow
+    # Get all items without problematic field queries
+    Write-Host "Retrieving all items..." -ForegroundColor Yellow
     
-    # Use CAML query to get all items efficiently
+    # Use simple CAML query to avoid field type issues
     $CAMLQuery = @"
 <View Scope='RecursiveAll'>
     <Query>
-        <Where>
-            <Eq>
-                <FieldRef Name='HasUniqueRoleAssignments'/>
-                <Value Type='Boolean'>1</Value>
-            </Eq>
-        </Where>
+        <OrderBy>
+            <FieldRef Name='ID'/>
+        </OrderBy>
     </Query>
     <RowLimit>$BatchSize</RowLimit>
 </View>
@@ -39,12 +36,19 @@ try {
 
     $ItemsProcessed = 0
     $TotalResetCount = 0
+    $Position = $null
     
     do {
-        # Get batch of items with unique permissions
-        $ListItems = Get-PnPListItem -List $Library -Query $CAMLQuery
+        # Get batch of items
+        if ($Position) {
+            $ListItems = Get-PnPListItem -List $Library -Query $CAMLQuery -PageToken $Position.PagingInfo
+        } else {
+            $ListItems = Get-PnPListItem -List $Library -Query $CAMLQuery
+        }
         
-        if ($ListItems.Count -eq 0) {
+        $Position = $ListItems.ListItemCollectionPosition
+        
+        if (!$ListItems -or $ListItems.Count -eq 0) {
             break
         }
         
@@ -52,10 +56,11 @@ try {
         
         foreach ($Item in $ListItems) {
             try {
-                # Check if item has unique permissions
-                $HasUniquePerms = Get-PnPProperty -ClientObject $Item -Property "HasUniqueRoleAssignments"
+                # Use direct property check to avoid field type issues
+                $Item.Context.Load($Item, "HasUniqueRoleAssignments")
+                $Item.Context.ExecuteQuery()
                 
-                if ($HasUniquePerms) {
+                if ($Item.HasUniqueRoleAssignments) {
                     # Reset to inherit permissions
                     $Item.ResetRoleInheritance()
                     $Item.Context.ExecuteQuery()
@@ -63,21 +68,28 @@ try {
                     $TotalResetCount++
                     
                     # Progress indicator
-                    if ($TotalResetCount % 50 -eq 0) {
+                    if ($TotalResetCount % 25 -eq 0) {
                         Write-Host "Reset permissions for $TotalResetCount items..." -ForegroundColor Cyan
                     }
                 }
+                
+                $ItemsProcessed++
+                
+                # Show overall progress
+                if ($ItemsProcessed % 100 -eq 0) {
+                    Write-Host "Processed $ItemsProcessed total items..." -ForegroundColor Yellow
+                }
             }
             catch {
-                Write-Warning "Failed to reset permissions for item ID $($Item.Id): $($_.Exception.Message)"
+                Write-Warning "Failed to process item ID $($Item.Id): $($_.Exception.Message)"
+                $ItemsProcessed++
             }
         }
         
-        $ItemsProcessed += $ListItems.Count
-        
-    } while ($ListItems.Count -eq $BatchSize)
+    } while ($Position -ne $null)
     
-    Write-Host "`nCompleted! Reset permissions for $TotalResetCount items." -ForegroundColor Green
+    Write-Host "`nCompleted! Processed $ItemsProcessed total items." -ForegroundColor Green
+    Write-Host "Reset permissions for $TotalResetCount items with unique permissions." -ForegroundColor Green
     Write-Host "All items now inherit permissions from the document library." -ForegroundColor Green
 }
 catch {
