@@ -39,6 +39,8 @@ try {
     $Position = $null
     $UniquePermissionItems = @()
     $ResetItems = @()
+    $TotalFolders = 0
+    $TotalFiles = 0
     
     do {
         # Get batch of items
@@ -58,6 +60,14 @@ try {
         
         foreach ($Item in $ListItems) {
             try {
+                # Count folders and files
+                $IsFolder = $Item["FSObjType"] -eq 1
+                if ($IsFolder) {
+                    $TotalFolders++
+                } else {
+                    $TotalFiles++
+                }
+                
                 # Use PnP PowerShell method to check permissions
                 $HasUniquePerms = Get-PnPProperty -ClientObject $Item -Property "HasUniqueRoleAssignments" -ErrorAction SilentlyContinue
                 
@@ -67,7 +77,7 @@ try {
                         ID = $Item.Id
                         Title = $Item["Title"]
                         FileLeafRef = $Item["FileLeafRef"]
-                        FileSystemObjectType = if($Item["FSObjType"] -eq 1) { "Folder" } else { "File" }
+                        FileSystemObjectType = if($IsFolder) { "Folder" } else { "File" }
                         ServerRelativeUrl = $Item["FileRef"]
                     }
                     
@@ -79,7 +89,7 @@ try {
                         ID = $Item.Id
                         Title = $Item["Title"]
                         FileLeafRef = $Item["FileLeafRef"]
-                        FileSystemObjectType = if($Item["FSObjType"] -eq 1) { "Folder" } else { "File" }
+                        FileSystemObjectType = if($IsFolder) { "Folder" } else { "File" }
                         ServerRelativeUrl = $Item["FileRef"]
                     }
                     
@@ -95,6 +105,13 @@ try {
         }
         
     } while ($Position -ne $null)
+    
+    Write-Host "`n=== DOCUMENT LIBRARY SUMMARY ===" -ForegroundColor Magenta
+    Write-Host "Total Items Processed: $ItemsProcessed" -ForegroundColor White
+    Write-Host "Total Folders: $TotalFolders" -ForegroundColor White
+    Write-Host "Total Files: $TotalFiles" -ForegroundColor White
+    Write-Host "Items with Unique Permissions: $($UniquePermissionItems.Count)" -ForegroundColor White
+    Write-Host "Items Reset to Inherit: $TotalResetCount" -ForegroundColor White
     
     Write-Host "`nCompleted! Processed $ItemsProcessed total items." -ForegroundColor Green
     Write-Host "Reset permissions for $TotalResetCount items with unique permissions." -ForegroundColor Green
