@@ -1,0 +1,130 @@
+# SharePoint Document Library Permission Reset Script
+# Resets all custom permissions to inherit from parent library
+
+# Configuration
+$SiteUrl = "https://yourtenant.sharepoint.com/sites/yoursite"
+$LibraryName = "YourDocumentLibrary"
+$BatchSize = 100  # Process items in batches for better performance
+
+# Connect to SharePoint
+Write-Host "Connecting to SharePoint..." -ForegroundColor Yellow
+Connect-PnPOnline -Url $SiteUrl -Interactive
+
+try {
+    # Get the document library
+    Write-Host "Getting document library: $LibraryName" -ForegroundColor Yellow
+    $Library = Get-PnPList -Identity $LibraryName
+    
+    if (!$Library) {
+        throw "Library '$LibraryName' not found!"
+    }
+
+    # Get all items with unique permissions (faster than checking each item)
+    Write-Host "Retrieving items with unique permissions..." -ForegroundColor Yellow
+    
+    # Use CAML query to get all items efficiently
+    $CAMLQuery = @"
+<View Scope='RecursiveAll'>
+    <Query>
+        <Where>
+            <Eq>
+                <FieldRef Name='HasUniqueRoleAssignments'/>
+                <Value Type='Boolean'>1</Value>
+            </Eq>
+        </Where>
+    </Query>
+    <RowLimit>$BatchSize</RowLimit>
+</View>
+"@
+
+    $ItemsProcessed = 0
+    $TotalResetCount = 0
+    
+    do {
+        # Get batch of items with unique permissions
+        $ListItems = Get-PnPListItem -List $Library -Query $CAMLQuery
+        
+        if ($ListItems.Count -eq 0) {
+            break
+        }
+        
+        Write-Host "Processing batch of $($ListItems.Count) items..." -ForegroundColor Green
+        
+        foreach ($Item in $ListItems) {
+            try {
+                # Check if item has unique permissions
+                $HasUniquePerms = Get-PnPProperty -ClientObject $Item -Property "HasUniqueRoleAssignments"
+                
+                if ($HasUniquePerms) {
+                    # Reset to inherit permissions
+                    $Item.ResetRoleInheritance()
+                    $Item.Context.ExecuteQuery()
+                    
+                    $TotalResetCount++
+                    
+                    # Progress indicator
+                    if ($TotalResetCount % 50 -eq 0) {
+                        Write-Host "Reset permissions for $TotalResetCount items..." -ForegroundColor Cyan
+                    }
+                }
+            }
+            catch {
+                Write-Warning "Failed to reset permissions for item ID $($Item.Id): $($_.Exception.Message)"
+            }
+        }
+        
+        $ItemsProcessed += $ListItems.Count
+        
+    } while ($ListItems.Count -eq $BatchSize)
+    
+    Write-Host "`nCompleted! Reset permissions for $TotalResetCount items." -ForegroundColor Green
+    Write-Host "All items now inherit permissions from the document library." -ForegroundColor Green
+}
+catch {
+    Write-Error "Script failed: $($_.Exception.Message)"
+}
+finally {
+    # Disconnect
+    Disconnect-PnPOnline
+    Write-Host "Disconnected from SharePoint." -ForegroundColor Yellow
+}
+
+# Alternative faster method for very large libraries (commented out)
+<#
+# Ultra-fast method using REST API batch requests (uncomment if needed)
+function Reset-PermissionsBatch {
+    param($SiteUrl, $LibraryName)
+    
+    Connect-PnPOnline -Url $SiteUrl -Interactive
+    
+    # Get all items with REST API
+    $RestQuery = "_api/web/lists/getbytitle('$LibraryName')/items?`$select=Id,HasUniqueRoleAssignments&`$filter=HasUniqueRoleAssignments eq true&`$top=5000"
+    
+    do {
+        $Items = Invoke-PnPSPRestMethod -Url $RestQuery -Method Get
+        
+        if ($Items.value.Count -gt 0) {
+            # Create batch request
+            $Batch = New-PnPBatch
+            
+            foreach ($Item in $Items.value) {
+                $ResetUrl = "_api/web/lists/getbytitle('$LibraryName')/items($($Item.Id))/resetroleinheritance"
+                Invoke-PnPSPRestMethod -Url $ResetUrl -Method Post -Batch $Batch
+            }
+            
+            # Execute batch
+            Invoke-PnPBatch -Batch $Batch
+            Write-Host "Reset $($Items.value.Count) items in batch"
+        }
+        
+        # Get next batch if available
+        $RestQuery = $Items.'odata.nextLink'
+        
+    } while ($RestQuery)
+    
+    Disconnect-PnPOnline
+}
+
+# Uncomment to use the ultra-fast batch method:
+# Reset-PermissionsBatch -SiteUrl $SiteUrl -LibraryName $LibraryName
+#>
