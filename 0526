@@ -36,27 +36,29 @@ try {
 
     $ItemsProcessed = 0
     $TotalResetCount = 0
-    $Position = $null
     $UniquePermissionItems = @()
     $ResetItems = @()
     $TotalFolders = 0
     $TotalFiles = 0
+    $ListItemCollectionPosition = $null
     
     do {
-        # Get batch of items
-        if ($Position) {
-            $ListItems = Get-PnPListItem -List $Library -Query $CAMLQuery -PageToken $Position.PagingInfo
+        # Get batch of items with proper pagination
+        if ($ListItemCollectionPosition) {
+            $ListItems = Get-PnPListItem -List $Library -Query $CAMLQuery -PageToken $ListItemCollectionPosition
         } else {
             $ListItems = Get-PnPListItem -List $Library -Query $CAMLQuery
         }
         
-        $Position = $ListItems.ListItemCollectionPosition
+        # Update position for next batch
+        $ListItemCollectionPosition = $ListItems.ListItemCollectionPosition
         
         if (!$ListItems -or $ListItems.Count -eq 0) {
+            Write-Host "No more items to process." -ForegroundColor Yellow
             break
         }
         
-        Write-Host "Processing batch of $($ListItems.Count) items..." -ForegroundColor Green
+        Write-Host "Processing batch of $($ListItems.Count) items (Total processed so far: $ItemsProcessed)..." -ForegroundColor Green
         
         foreach ($Item in $ListItems) {
             try {
@@ -104,7 +106,7 @@ try {
             }
         }
         
-    } while ($Position -ne $null)
+    } while ($ListItemCollectionPosition -ne $null)
     
     Write-Host "`n=== DOCUMENT LIBRARY SUMMARY ===" -ForegroundColor Magenta
     Write-Host "Total Items Processed: $ItemsProcessed" -ForegroundColor White
