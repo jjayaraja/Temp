@@ -37,6 +37,8 @@ try {
     $ItemsProcessed = 0
     $TotalResetCount = 0
     $Position = $null
+    $UniquePermissionItems = @()
+    $ResetItems = @()
     
     do {
         # Get batch of items
@@ -60,23 +62,31 @@ try {
                 $HasUniquePerms = Get-PnPProperty -ClientObject $Item -Property "HasUniqueRoleAssignments" -ErrorAction SilentlyContinue
                 
                 if ($HasUniquePerms -eq $true) {
+                    # Add to unique permissions list
+                    $UniquePermissionItems += [PSCustomObject]@{
+                        ID = $Item.Id
+                        Title = $Item["Title"]
+                        FileLeafRef = $Item["FileLeafRef"]
+                        FileSystemObjectType = if($Item["FSObjType"] -eq 1) { "Folder" } else { "File" }
+                        ServerRelativeUrl = $Item["FileRef"]
+                    }
+                    
                     # Reset to inherit permissions using PnP method
                     Set-PnPListItemPermission -List $Library -Identity $Item.Id -InheritPermissions
                     
-                    $TotalResetCount++
-                    
-                    # Progress indicator
-                    if ($TotalResetCount % 25 -eq 0) {
-                        Write-Host "Reset permissions for $TotalResetCount items..." -ForegroundColor Cyan
+                    # Add to reset items list
+                    $ResetItems += [PSCustomObject]@{
+                        ID = $Item.Id
+                        Title = $Item["Title"]
+                        FileLeafRef = $Item["FileLeafRef"]
+                        FileSystemObjectType = if($Item["FSObjType"] -eq 1) { "Folder" } else { "File" }
+                        ServerRelativeUrl = $Item["FileRef"]
                     }
+                    
+                    $TotalResetCount++
                 }
                 
                 $ItemsProcessed++
-                
-                # Show overall progress
-                if ($ItemsProcessed % 100 -eq 0) {
-                    Write-Host "Processed $ItemsProcessed total items..." -ForegroundColor Yellow
-                }
             }
             catch {
                 Write-Warning "Failed to process item ID $($Item.Id): $($_.Exception.Message)"
@@ -88,6 +98,14 @@ try {
     
     Write-Host "`nCompleted! Processed $ItemsProcessed total items." -ForegroundColor Green
     Write-Host "Reset permissions for $TotalResetCount items with unique permissions." -ForegroundColor Green
+    
+    # Display items that had unique permissions
+    Write-Host "`n=== ITEMS WITH UNIQUE PERMISSIONS ($($UniquePermissionItems.Count)) ===" -ForegroundColor Yellow
+    $UniquePermissionItems | Format-Table -Property ID, Title, FileSystemObjectType, FileLeafRef, ServerRelativeUrl -AutoSize
+    
+    # Display items that were reset to inherit
+    Write-Host "`n=== ITEMS RESET TO INHERIT PERMISSIONS ($($ResetItems.Count)) ===" -ForegroundColor Green
+    $ResetItems | Format-Table -Property ID, Title, FileSystemObjectType, FileLeafRef, ServerRelativeUrl -AutoSize
     Write-Host "All items now inherit permissions from the document library." -ForegroundColor Green
 }
 catch {
