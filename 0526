@@ -56,14 +56,12 @@ try {
         
         foreach ($Item in $ListItems) {
             try {
-                # Use direct property check to avoid field type issues
-                $Item.Context.Load($Item, "HasUniqueRoleAssignments")
-                $Item.Context.ExecuteQuery()
+                # Use PnP PowerShell method to check permissions
+                $HasUniquePerms = Get-PnPProperty -ClientObject $Item -Property "HasUniqueRoleAssignments" -ErrorAction SilentlyContinue
                 
-                if ($Item.HasUniqueRoleAssignments) {
-                    # Reset to inherit permissions
-                    $Item.ResetRoleInheritance()
-                    $Item.Context.ExecuteQuery()
+                if ($HasUniquePerms -eq $true) {
+                    # Reset to inherit permissions using PnP method
+                    Set-PnPListItemPermission -List $Library -Identity $Item.Id -InheritPermissions
                     
                     $TotalResetCount++
                     
