@@ -50,10 +50,7 @@ try {
 "@
         
         try {
-            $BatchItems = Get-PnPListItem -List $Library -Query $CAMLQuery -PageSize $PageSize -ScriptBlock {
-                param($items)
-                return $items
-            }
+            $BatchItems = Get-PnPListItem -List $Library -Query $CAMLQuery -PageSize $PageSize
             
             if ($BatchItems -and $BatchItems.Count -gt 0) {
                 $AllItems += $BatchItems
