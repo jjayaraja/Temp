@@ -19,48 +19,63 @@ try {
         throw "Library '$LibraryName' not found!"
     }
 
-    # Get all items without problematic field queries
+    # Get all items using proper pagination
     Write-Host "Retrieving all items..." -ForegroundColor Yellow
     
-    # Use simple CAML query to avoid field type issues
-    $CAMLQuery = @"
-<View Scope='RecursiveAll'>
-    <Query>
-        <OrderBy>
-            <FieldRef Name='ID'/>
-        </OrderBy>
-    </Query>
-    <RowLimit>$BatchSize</RowLimit>
-</View>
-"@
-
     $ItemsProcessed = 0
     $TotalResetCount = 0
     $UniquePermissionItems = @()
     $ResetItems = @()
     $TotalFolders = 0
     $TotalFiles = 0
-    $ListItemCollectionPosition = $null
+    
+    # Get all items in batches using Get-PnPListItem with -PageSize
+    $AllItems = @()
+    $PageSize = $BatchSize
+    $StartIndex = 0
     
     do {
-        # Get batch of items with proper pagination
-        if ($ListItemCollectionPosition) {
-            $ListItems = Get-PnPListItem -List $Library -Query $CAMLQuery -PageToken $ListItemCollectionPosition
-        } else {
-            $ListItems = Get-PnPListItem -List $Library -Query $CAMLQuery
+        Write-Host "Fetching items $StartIndex to $($StartIndex + $PageSize - 1)..." -ForegroundColor Cyan
+        
+        # Use CAML query with proper paging
+        $CAMLQuery = @"
+<View Scope='RecursiveAll'>
+    <Query>
+        <OrderBy>
+            <FieldRef Name='ID'/>
+        </OrderBy>
+    </Query>
+    <RowLimit>$PageSize</RowLimit>
+</View>
+"@
+        
+        try {
+            $BatchItems = Get-PnPListItem -List $Library -Query $CAMLQuery -PageSize $PageSize -ScriptBlock {
+                param($items)
+                return $items
+            }
+            
+            if ($BatchItems -and $BatchItems.Count -gt 0) {
+                $AllItems += $BatchItems
+                $StartIndex += $BatchItems.Count
+                Write-Host "Retrieved $($BatchItems.Count) items. Total so far: $($AllItems.Count)" -ForegroundColor Green
+            } else {
+                break
+            }
         }
-        
-        # Update position for next batch
-        $ListItemCollectionPosition = $ListItems.ListItemCollectionPosition
-        
-        if (!$ListItems -or $ListItems.Count -eq 0) {
-            Write-Host "No more items to process." -ForegroundColor Yellow
+        catch {
+            Write-Host "Trying alternative method..." -ForegroundColor Yellow
+            # Alternative: Get all items at once (for smaller libraries or when pagination fails)
+            $AllItems = Get-PnPListItem -List $Library -PageSize 5000
             break
         }
         
-        Write-Host "Processing batch of $($ListItems.Count) items (Total processed so far: $ItemsProcessed)..." -ForegroundColor Green
-        
-        foreach ($Item in $ListItems) {
+    } while ($BatchItems.Count -eq $PageSize)
+    
+    Write-Host "Total items retrieved: $($AllItems.Count)" -ForegroundColor Magenta
+    
+    # Process all items
+    foreach ($Item in $AllItems) {
             try {
                 # Count folders and files
                 $IsFolder = $Item["FSObjType"] -eq 1
@@ -106,7 +121,11 @@ try {
             }
         }
         
-    } while ($ListItemCollectionPosition -ne $null)
+        # Show progress every 1000 items
+        if ($ItemsProcessed % 1000 -eq 0) {
+            Write-Host "Processed $ItemsProcessed items so far..." -ForegroundColor Yellow
+        }
+    }
     
     Write-Host "`n=== DOCUMENT LIBRARY SUMMARY ===" -ForegroundColor Magenta
     Write-Host "Total Items Processed: $ItemsProcessed" -ForegroundColor White
