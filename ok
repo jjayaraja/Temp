@@ -1,0 +1,492 @@
+<#Content-Type-Aware Migration Process
+Phase 1: Content Type Analysis & Mapping
+Step 1: Analyze Content Types and Their Page Layouts
+#>
+# Connect to SP 2016 On-Premises
+Connect-PnPOnline -Url "https://yoursp2016server/sites/yoursite" -CurrentCredentials
+
+# Get detailed content type analysis
+$pagesList = Get-PnPList -Identity "Pages"
+$contentTypes = Get-PnPContentType -List "Pages"
+
+$contentTypeAnalysis = @{}
+
+foreach($ct in $contentTypes) {
+    Write-Host "Analyzing Content Type: $($ct.Name)" -ForegroundColor Cyan
+    
+    # Get pages using this content type
+    $pagesWithCT = Get-PnPListItem -List "Pages" -Query "<View><Query><Where><Eq><FieldRef Name='ContentTypeId'/><Value Type='ContentTypeId'>$($ct.Id)</Value></Eq></Where></Query></View>"
+    
+    # Get associated page layout (if any)
+    $samplePage = $pagesWithCT | Select-Object -First 1
+    $pageLayout = $null
+    if($samplePage) {
+        $pageLayout = $samplePage["PublishingPageLayout"]
+    }
+    
+    # Get custom fields specific to this content type
+    $ctFields = $ct.Fields | Where-Object {$_.FromBaseType -eq $false}
+    $richHtmlFields = $ctFields | Where-Object {$_.TypeAsString -eq "HTML"}
+    
+    $contentTypeAnalysis[$ct.Name] = @{
+        Id = $ct.Id
+        PageCount = $pagesWithCT.Count
+        PageLayout = $pageLayout
+        CustomFields = $ctFields | Select-Object InternalName, Title, TypeAsString
+        RichHtmlFields = $richHtmlFields | Select-Object InternalName, Title
+        SamplePages = $pagesWithCT | Select-Object -First 3 | Select-Object Title, FileRef
+    }
+    
+    Write-Host "  - Pages: $($pagesWithCT.Count)"
+    Write-Host "  - Page Layout: $($pageLayout.Description if $pageLayout else 'None')"
+    Write-Host "  - Custom Fields: $($ctFields.Count)"
+    Write-Host "  - Rich HTML Fields: $($richHtmlFields.Count)"
+}
+
+$contentTypeAnalysis | Export-Clixml -Path "C:\Migration\ContentTypeAnalysis.xml"
+Write-Host "`nContent Type Analysis Complete - saved to ContentTypeAnalysis.xml" -ForegroundColor Green
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+################################################
+
+
+<#Step 2: Create Content-Type-Specific Field Mappings
+ #>
+$contentTypeAnalysis = Import-Clixml -Path "C:\Migration\ContentTypeAnalysis.xml"
+
+# Create field mappings for each content type
+$contentTypeFieldMappings = @{}
+
+foreach($ctName in $contentTypeAnalysis.Keys) {
+    $ctData = $contentTypeAnalysis[$ctName]
+    $fieldMappings = @()
+    
+    Write-Host "Creating field mappings for: $ctName" -ForegroundColor Yellow
+    
+    foreach($richField in $ctData.RichHtmlFields) {
+        $fieldMappings += @{
+            ContentType = $ctName
+            SourceField = $richField.InternalName
+            TargetTextField = "$($richField.InternalName)_Text"
+            TargetHtmlBackup = "$($richField.InternalName)_Html"
+            TargetWebPartField = "$($richField.InternalName)_WebPart"
+        }
+        
+        Write-Host "  - Mapping $($richField.InternalName) -> Text + HTML backup" -ForegroundColor Gray
+    }
+    
+    $contentTypeFieldMappings[$ctName] = $fieldMappings
+}
+
+$contentTypeFieldMappings | Export-Clixml -Path "C:\Migration\ContentTypeFieldMappings.xml"
+
+
+######################################################
+
+<#Step 3: Create Content-Type-Specific Modern Layout Mappings
+#>
+# Define how each content type maps to modern page layouts
+$contentTypeLayoutMappings = @{
+    # Replace these with your actual content type names and desired modern layouts
+    "News Article" = @{
+        ModernLayout = "Article"
+        SectionLayout = "OneColumn"
+        MetadataPlacement = "Top"
+        RichHtmlSections = @("MainContent", "Sidebar")
+    }
+    "Product Page" = @{
+        ModernLayout = "SingleWebPartAppPage"
+        SectionLayout = "TwoColumn"
+        MetadataPlacement = "Side"
+        RichHtmlSections = @("Description", "Specifications")
+    }
+    "Event Page" = @{
+        ModernLayout = "Article"
+        SectionLayout = "ThreeColumn"
+        MetadataPlacement = "Top"
+        RichHtmlSections = @("EventDetails", "Location")
+    }
+    "Landing Page" = @{
+        ModernLayout = "HeaderlessSearchResults"
+        SectionLayout = "FullWidth"
+        MetadataPlacement = "Bottom"
+        RichHtmlSections = @("HeroContent", "Features", "CallToAction")
+    }
+}
+
+$contentTypeLayoutMappings | Export-Clixml -Path "C:\Migration\ContentTypeLayoutMappings.xml"
+
+
+
+
+
+
+########################################################
+<#
+Phase 2: SPO Structure Creation (Content-Type-Aware)
+Step 4: Create SPO Site Structure with Content-Type-Specific Fields
+
+#>
+Connect-PnPOnline -Url "https://yourtenant.sharepoint.com/sites/targetsite" -Interactive
+
+$contentTypeAnalysis = Import-Clixml -Path "C:\Migration\ContentTypeAnalysis.xml"
+$contentTypeFieldMappings = Import-Clixml -Path "C:\Migration\ContentTypeFieldMappings.xml"
+
+# Create site columns for each content type's fields
+foreach($ctName in $contentTypeAnalysis.Keys) {
+    $ctData = $contentTypeAnalysis[$ctName]
+    $fieldMappings = $contentTypeFieldMappings[$ctName]
+    
+    Write-Host "Creating SPO fields for Content Type: $ctName" -ForegroundColor Cyan
+    
+    # Create a field group for this content type
+    $fieldGroup = "Migration - $ctName"
+    
+    foreach($mapping in $fieldMappings) {
+        try {
+            # Create Text field for converted Rich HTML
+            Add-PnPField -DisplayName "$($mapping.SourceField) (Text)" -InternalName $mapping.TargetTextField -Type Note -Group $fieldGroup
+            Write-Host "  ✓ Created: $($mapping.TargetTextField)" -ForegroundColor Green
+            
+            # Create backup field for original HTML
+            Add-PnPField -DisplayName "$($mapping.SourceField) (HTML Backup)" -InternalName $mapping.TargetHtmlBackup -Type Note -Group $fieldGroup
+            Write-Host "  ✓ Created: $($mapping.TargetHtmlBackup)" -ForegroundColor Green
+            
+            # Create field to track which web parts were created from this Rich HTML
+            Add-PnPField -DisplayName "$($mapping.SourceField) (Web Parts)" -InternalName $mapping.TargetWebPartField -Type Note -Group $fieldGroup
+            Write-Host "  ✓ Created: $($mapping.TargetWebPartField)" -ForegroundColor Green
+        }
+        catch {
+            Write-Warning "Field creation failed for $($mapping.TargetTextField): $($_.Exception.Message)"
+        }
+    }
+    
+    # Create non-Rich HTML custom fields for this content type
+    foreach($field in $ctData.CustomFields) {
+        if($field.TypeAsString -ne "HTML") {
+            try {
+                $spoFieldType = Convert-SPFieldTypeToSPO -FieldType $field.TypeAsString
+                Add-PnPField -DisplayName "$($field.Title)" -InternalName "$($field.InternalName)_Migrated" -Type $spoFieldType -Group $fieldGroup
+                Write-Host "  ✓ Created: $($field.InternalName)_Migrated ($spoFieldType)" -ForegroundColor Green
+            }
+            catch {
+                Write-Warning "Could not create field $($field.InternalName): $($_.Exception.Message)"
+            }
+        }
+    }
+}
+
+# Create tracking fields
+Add-PnPField -DisplayName "Original Content Type" -InternalName "OriginalContentType" -Type Text -Group "Migration Tracking"
+Add-PnPField -DisplayName "Original Page Layout" -InternalName "OriginalPageLayout" -Type Text -Group "Migration Tracking"
+Add-PnPField -DisplayName "Modern Layout Applied" -InternalName "ModernLayoutApplied" -Type Text -Group "Migration Tracking"
+
+
+
+
+
+################################################
+<#Step 5: ShareGate Migration with Content-Type-Specific Mappings
+#>
+Import-Module Sharegate
+
+$srcSite = Get-Site -Address "https://yoursp2016server/sites/yoursite"
+$dstSite = Get-Site -Address "https://yourtenant.sharepoint.com/sites/targetsite"
+
+$contentTypeFieldMappings = Import-Clixml -Path "C:\Migration\ContentTypeFieldMappings.xml"
+
+# Configure migration settings
+$copySettings = New-CopySettings -OnContentItemExists IncrementalUpdate
+$copySettings.OnSiteObjectExists = "Merge"
+$copySettings.PreserveVersionHistory = $true
+
+# Create property mappings for each content type
+$propertyMappings = New-PropertyMappingSettings
+
+foreach($ctName in $contentTypeFieldMappings.Keys) {
+    $fieldMappings = $contentTypeFieldMappings[$ctName]
+    
+    Write-Host "Setting up ShareGate mappings for: $ctName" -ForegroundColor Yellow
+    
+    foreach($mapping in $fieldMappings) {
+        # Map Rich HTML to plain text
+        Add-PropertyMapping -MappingSettings $propertyMappings -Source $mapping.SourceField -Destination $mapping.TargetTextField -ConversionType HtmlToText
+        
+        # Map Rich HTML to backup field (preserve original)
+        Add-PropertyMapping -MappingSettings $propertyMappings -Source $mapping.SourceField -Destination $mapping.TargetHtmlBackup
+        
+        Write-Host "  - Mapped $($mapping.SourceField) -> $($mapping.TargetTextField) + backup" -ForegroundColor Gray
+    }
+}
+
+$copySettings.PropertyMappings = $propertyMappings
+
+# Execute migration
+Write-Host "Starting ShareGate migration..." -ForegroundColor Green
+$result = Copy-Content -SourceList (Get-List -Site $srcSite -Name "Pages") -DestinationList (Get-List -Site $dstSite -Name "Pages") -CopySettings $copySettings
+
+Write-Host "Migration completed:" -ForegroundColor Green
+Write-Host "  - Items copied: $($result.ItemsCopied)"
+Write-Host "  - Versions copied: $($result.VersionsCopied)"
+Write-Host "  - Errors: $($result.Errors.Count)"
+
+
+
+
+
+###########################################
+<# Phase 3: Content-Type-Aware Modern Page Conversion
+Step 6: Convert Pages Based on Content Type and Layout #>
+Connect-PnPOnline -Url "https://yourtenant.sharepoint.com/sites/targetsite" -Interactive
+
+$contentTypeAnalysis = Import-Clixml -Path "C:\Migration\ContentTypeAnalysis.xml"
+$contentTypeFieldMappings = Import-Clixml -Path "C:\Migration\ContentTypeFieldMappings.xml"
+$contentTypeLayoutMappings = Import-Clixml -Path "C:\Migration\ContentTypeLayoutMappings.xml"
+
+# Export PnP page mappings
+Export-PnPPageMapping -BuiltInPageLayoutMapping -CustomPageLayoutMapping -BuiltInWebPartMapping -CustomWebPartMapping -Folder "C:\Migration\Mappings"
+$pageLayoutMapping = Get-Content "C:\Migration\Mappings\pagelayoutmapping.xml" -Raw
+
+# Create Classic Pages Archive
+New-PnPList -Title "ClassicPagesArchive" -Template DocumentLibrary -EnableVersioning
+
+$migratedPages = Get-PnPListItem -List "Pages" -PageSize 500
+$conversionLog = @()
+
+# Group pages by content type for organized processing
+$pagesByContentType = $migratedPages | Group-Object {$_.ContentType.Name}
+
+foreach($ctGroup in $pagesByContentType) {
+    $contentTypeName = $ctGroup.Name
+    $pagesInCT = $ctGroup.Group
+    
+    Write-Host "`n=== Processing Content Type: $contentTypeName ($($pagesInCT.Count) pages) ===" -ForegroundColor Magenta
+    
+    # Get mappings for this content type
+    $fieldMappings = $contentTypeFieldMappings[$contentTypeName]
+    $layoutMapping = $contentTypeLayoutMappings[$contentTypeName]
+    
+    if(-not $layoutMapping) {
+        Write-Warning "No layout mapping found for $contentTypeName - using default"
+        $layoutMapping = @{
+            ModernLayout = "Article"
+            SectionLayout = "OneColumn"
+            MetadataPlacement = "Top"
+            RichHtmlSections = @("Content")
+        }
+    }
+    
+    foreach($page in $pagesInCT) {
+        try {
+            $pageUrl = $page["FileRef"]
+            Write-Host "Converting: $($page['Title'])" -ForegroundColor Cyan
+            
+            # Store version history before conversion
+            $originalVersions = Get-PnPListItemVersion -List "Pages" -Identity $page.Id
+            
+            # Convert to modern page with content-type-specific layout
+            $modernPage = Convert-PnPPage -Identity $pageUrl -PublishingPage -CopyPageMetadata -PageLayoutMapping $pageLayoutMapping -AddPageAcceptBanner -SkipItemLevelPermissions
+            
+            # Apply content-type-specific modern structure
+            Apply-ContentTypeSpecificLayout -ModernPage $modernPage -Page $page -LayoutMapping $layoutMapping -FieldMappings $fieldMappings
+            
+            # Archive original page
+            $archiveUrl = "ClassicPagesArchive/$($page['FileLeafRef'])"
+            Copy-PnPFile -SourceUrl $pageUrl -TargetUrl $archiveUrl
+            
+            # Update modern page with detailed tracking
+            Set-PnPListItem -List "SitePages" -Identity $modernPage.PageId -Values @{
+                "OriginalPageId" = $page.Id.ToString()
+                "OriginalContentType" = $contentTypeName
+                "OriginalPageLayout" = $page["PublishingPageLayout"].Description
+                "ModernLayoutApplied" = $layoutMapping.ModernLayout
+                "MigrationDate" = (Get-Date)
+                "ClassicPageRef" = $archiveUrl
+            }
+            
+            $conversionLog += @{
+                OriginalTitle = $page["Title"]
+                ContentType = $contentTypeName
+                OriginalUrl = $pageUrl
+                ModernPageId = $modernPage.PageId
+                LayoutApplied = $layoutMapping.ModernLayout
+                RichHtmlFieldsProcessed = $fieldMappings.Count
+                VersionCount = $originalVersions.Count
+                Status = "Success"
+            }
+            
+            Write-Host "  ✓ Converted with $($layoutMapping.ModernLayout) layout" -ForegroundColor Green
+            
+        }
+        catch {
+            Write-Error "Failed to convert $($page['Title']): $($_.Exception.Message)"
+            $conversionLog += @{
+                OriginalTitle = $page["Title"]
+                ContentType = $contentTypeName
+                Status = "Failed"
+                Error = $_.Exception.Message
+            }
+        }
+    }
+}
+
+$conversionLog | Export-Clixml -Path "C:\Migration\ContentTypeAwareConversionLog.xml"
+
+
+
+
+###################################
+<#     Step 7: Content-Type-Specific Layout Application Function
+#>
+function Apply-ContentTypeSpecificLayout {
+    param(
+        $ModernPage,
+        $Page,
+        $LayoutMapping,
+        $FieldMappings
+    )
+    
+    Write-Host "    Applying $($LayoutMapping.ModernLayout) layout with $($LayoutMapping.SectionLayout) sections" -ForegroundColor Gray
+    
+    # Set up sections based on layout mapping
+    switch($LayoutMapping.SectionLayout) {
+        "OneColumn" {
+            $sectionIndex = 1
+            $columnIndex = 1
+        }
+        "TwoColumn" {
+            Add-PnPPageSection -Page $ModernPage -SectionTemplate TwoColumn
+            $sectionIndex = 1
+        }
+        "ThreeColumn" {
+            Add-PnPPageSection -Page $ModernPage -SectionTemplate ThreeColumn
+            $sectionIndex = 1
+        }
+        "FullWidth" {
+            Add-PnPPageSection -Page $ModernPage -SectionTemplate OneColumnFullWidth
+            $sectionIndex = 1
+            $columnIndex = 1
+        }
+    }
+    
+    # Add metadata based on placement preference
+    if($LayoutMapping.MetadataPlacement -eq "Top") {
+        Add-MetadataWebPart -Page $ModernPage -PageItem $Page -Section 1 -Column 1 -FieldMappings $FieldMappings
+        $contentStartSection = 2
+    } else {
+        $contentStartSection = 1
+    }
+    
+    # Process Rich HTML sections according to content type layout
+    $sectionCounter = $contentStartSection
+    foreach($sectionName in $LayoutMapping.RichHtmlSections) {
+        $matchingMapping = $FieldMappings | Where-Object {$_.SourceField -like "*$sectionName*" -or $sectionName -like "*$($_.SourceField)*"}
+        
+        if($matchingMapping) {
+            $textContent = $Page[$matchingMapping.TargetTextField]
+            $htmlBackup = $Page[$matchingMapping.TargetHtmlBackup]
+            
+            if($textContent) {
+                # Determine column based on section layout
+                $columnIndex = switch($LayoutMapping.SectionLayout) {
+                    "TwoColumn" { if($sectionCounter % 2 -eq 1) {1} else {2} }
+                    "ThreeColumn" { ($sectionCounter % 3) + 1 }
+                    default { 1 }
+                }
+                
+                # Add text content
+                Add-PnPPageTextPart -Page $ModernPage -Text $textContent -Section $sectionCounter -Column $columnIndex
+                
+                # Extract and add images
+                if($htmlBackup) {
+                    $imageUrls = Extract-ImagesFromHtml -HtmlContent $htmlBackup
+                    foreach($imageUrl in $imageUrls) {
+                        try {
+                            Add-PnPPageImageWebPart -Page $ModernPage -ImageUrl $imageUrl -Section $sectionCounter -Column $columnIndex
+                        }
+                        catch {
+                            Write-Warning "      Could not add image: $imageUrl"
+                        }
+                    }
+                }
+                
+                # Track which web parts were created
+                Set-PnPListItem -List "SitePages" -Identity $ModernPage.PageId -Values @{
+                    $matchingMapping.TargetWebPartField = "Text WebPart (Section $sectionCounter, Column $columnIndex)"
+                }
+            }
+        }
+        
+        if($LayoutMapping.SectionLayout -eq "OneColumn" -or $LayoutMapping.SectionLayout -eq "FullWidth") {
+            $sectionCounter++
+        }
+    }
+    
+    # Add metadata at bottom if specified
+    if($LayoutMapping.MetadataPlacement -eq "Bottom") {
+        Add-MetadataWebPart -Page $ModernPage -PageItem $Page -Section ($sectionCounter + 1) -Column 1 -FieldMappings $FieldMappings
+    }
+    
+    # Publish the page
+    Set-PnPPage -Identity $ModernPage -Publish
+}
+
+function Add-MetadataWebPart {
+    param($Page, $PageItem, $Section, $Column, $FieldMappings)
+    
+    # Create a summary of the page metadata for display
+    $metadataHtml = "<div class='page-metadata'><h3>Page Information</h3><ul>"
+    
+    foreach($mapping in $FieldMappings) {
+        $fieldValue = $PageItem[$mapping.TargetTextField]
+        if($fieldValue) {
+            $metadataHtml += "<li><strong>$($mapping.SourceField):</strong> $($fieldValue.Substring(0, [Math]::Min(100, $fieldValue.Length)))...</li>"
+        }
+    }
+    
+    $metadataHtml += "</ul></div>"
+    
+    Add-PnPPageTextPart -Page $Page -Text $metadataHtml -Section $Section -Column $Column
+}
+
+function Convert-SPFieldTypeToSPO {
+    param($FieldType)
+    
+    switch($FieldType) {
+        "Text" { return "Text" }
+        "Note" { return "Note" }
+        "Choice" { return "Choice" }
+        "DateTime" { return "DateTime" }
+        "Number" { return "Number" }
+        "Boolean" { return "Boolean" }
+        "User" { return "User" }
+        "Lookup" { return "Lookup" }
+        default { return "Text" }
+    }
+}
+
+
+<#
+This revised approach now properly handles:
+
+Content-Type-Specific Analysis - Each of your 4 content types is analyzed separately
+Layout-Aware Mapping - Different modern layouts are applied based on content type
+Field-Specific Handling - Rich HTML fields are handled per content type
+Preserved Relationships - Version history and metadata are maintained per content type
+Structured Modern Pages - Each content type gets its appropriate modern layout structure
+#>
