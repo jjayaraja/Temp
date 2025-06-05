@@ -1,0 +1,74 @@
+Copilot-Specific Zero Trust Configuration Matrix
+Understanding that Microsoft Copilot inherits your existing Microsoft 365 security posture is crucial for proper implementation.
+
+Control Area	Specific Protection	Configuration Location	Key Implementation Notes
+Data Access Control	Copilot respects existing SharePoint, OneDrive, and Teams permissions - users can only access via Copilot what they already have permission to see	• SharePoint Admin Center
+• OneDrive Admin Center
+• Teams Admin Center
+• Exchange Admin Center	Critical: Audit existing permissions before Copilot deployment. Copilot will inherit all current access rights, including overprivileged accounts
+Sensitive Data Protection	Prevents Copilot from processing or exposing classified, confidential, or regulated data	• Microsoft Purview → Data Loss Prevention
+• Microsoft Purview → Sensitivity Labels
+• Microsoft Purview → Information Protection	Configure DLP policies specifically for "Microsoft 365 Copilot" as a service. Apply sensitivity labels to restrict Copilot access to highly classified content
+Identity & Access Management	Ensures only authorized users can access Copilot features with appropriate authentication	• Microsoft Entra Admin Center → Conditional Access
+• Microsoft 365 Admin Center → User Management	Create Copilot-specific conditional access policies requiring MFA, compliant devices, and trusted networks
+Usage Monitoring	Tracks Copilot interactions, prompts, and generated content for security and compliance	• Microsoft Purview → Audit Log Search
+• Microsoft 365 Admin Center → Reports → Usage
+• Microsoft Sentinel (if deployed)	Enable "Microsoft 365 Copilot" activities in audit logging. Set up automated alerts for unusual usage patterns
+Prompt Security	Mitigates risks from malicious prompts designed to extract sensitive information or bypass controls	• User Education Programs
+• Microsoft Purview → Adaptive Protection
+• Internal Security Awareness	Focus on training users to recognize and report suspicious prompt behaviors. No direct technical control available
+External Data Prevention	Prevents organizational data from being inadvertently shared externally through Copilot	• Microsoft Purview → DLP Policies
+• Microsoft Defender for Cloud Apps
+• Network Security Controls	Configure DLP policies to detect and block sensitive data in Copilot outputs. Monitor for data exfiltration patterns
+
+
+
+
+<table data-source-line="26-33" class="table-scroll-init">
+<thead data-source-line="26-26">
+<tr data-source-line="26-26">
+<th><strong>Control Area</strong></th>
+<th><strong>Specific Protection</strong></th>
+<th><strong>Configuration Location</strong></th>
+<th><strong>Key Implementation Notes</strong></th>
+</tr>
+</thead>
+<tbody data-source-line="28-33">
+<tr data-source-line="28-28">
+<td><strong>Data Access Control</strong></td>
+<td>Copilot respects existing SharePoint, OneDrive, and Teams permissions - users can only access via Copilot what they already have permission to see</td>
+<td>• SharePoint Admin Center<br>• OneDrive Admin Center<br>• Teams Admin Center<br>• Exchange Admin Center</td>
+<td><strong>Critical:</strong> Audit existing permissions before Copilot deployment. Copilot will inherit all current access rights, including overprivileged accounts</td>
+</tr>
+<tr data-source-line="29-29">
+<td><strong>Sensitive Data Protection</strong></td>
+<td>Prevents Copilot from processing or exposing classified, confidential, or regulated data</td>
+<td>• Microsoft Purview → Data Loss Prevention<br>• Microsoft Purview → Sensitivity Labels<br>• Microsoft Purview → Information Protection</td>
+<td>Configure DLP policies specifically for "Microsoft 365 Copilot" as a service. Apply sensitivity labels to restrict Copilot access to highly classified content</td>
+</tr>
+<tr data-source-line="30-30">
+<td><strong>Identity &amp; Access Management</strong></td>
+<td>Ensures only authorized users can access Copilot features with appropriate authentication</td>
+<td>• Microsoft Entra Admin Center → Conditional Access<br>• Microsoft 365 Admin Center → User Management</td>
+<td>Create Copilot-specific conditional access policies requiring MFA, compliant devices, and trusted networks</td>
+</tr>
+<tr data-source-line="31-31">
+<td><strong>Usage Monitoring</strong></td>
+<td>Tracks Copilot interactions, prompts, and generated content for security and compliance</td>
+<td>• Microsoft Purview → Audit Log Search<br>• Microsoft 365 Admin Center → Reports → Usage<br>• Microsoft Sentinel (if deployed)</td>
+<td>Enable "Microsoft 365 Copilot" activities in audit logging. Set up automated alerts for unusual usage patterns</td>
+</tr>
+<tr data-source-line="32-32">
+<td><strong>Prompt Security</strong></td>
+<td>Mitigates risks from malicious prompts designed to extract sensitive information or bypass controls</td>
+<td>• User Education Programs<br>• Microsoft Purview → Adaptive Protection<br>• Internal Security Awareness</td>
+<td>Focus on training users to recognize and report suspicious prompt behaviors. No direct technical control available</td>
+</tr>
+<tr data-source-line="33-33">
+<td><strong>External Data Prevention</strong></td>
+<td>Prevents organizational data from being inadvertently shared externally through Copilot</td>
+<td>• Microsoft Purview → DLP Policies<br>• Microsoft Defender for Cloud Apps<br>• Network Security Controls</td>
+<td>Configure DLP policies to detect and block sensitive data in Copilot outputs. Monitor for data exfiltration patterns</td>
+</tr>
+</tbody>
+</table>
