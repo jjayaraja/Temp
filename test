@@ -9,23 +9,26 @@ function Set-PermissionsRecursively {
 
     $items = Get-PnPFolderItem -FolderSiteRelativeUrl $folderUrl -ItemType Folder
 
-    foreach ($item in $items) {
-        Write-Host " > Subfolder '$($item.Name)'"
+   foreach ($item in $items) {
+    Write-Host " > Subfolder '$($item.Name)'"
 
-        # Get list item by folder path
-$listItem = Get-PnPListItem -List $library -FolderServerRelativeUrl $item.ServerRelativeUrl | Where-Object { $_.FileSystemObjectType -eq "Folder" -and $_["FileLeafRef"] -eq $item.Name }
+    try {
+        # Get the list item behind the folder
+        $folderObj = Get-PnPFolder -Url $item.ServerRelativeUrl
+        $listItemId = $folderObj.ListItemAllFields.Id
 
-        if ($listItem) {
-            # Break inheritance and assign Contribute
-            Set-PnPListItemPermission -List $library -Identity $listItem.Id -InheritPermissions:$false
-            Set-PnPListItemPermission -List $library -Identity $listItem.Id -Group $groupContribute -AddRole "Contribute"
-        } else {
-            Write-Warning "   Could not find list item for '$($item.ServerRelativeUrl)'"
-        }
-
-        # Recurse into child folders
-        Set-PermissionsRecursively -folderUrl $item.ServerRelativeUrl.Substring(1)
+        # Set permissions
+        Set-PnPListItemPermission -List $library -Identity $listItemId -InheritPermissions:$false
+        Set-PnPListItemPermission -List $library -Identity $listItemId -Group $groupContribute -AddRole "Contribute"
     }
+    catch {
+        Write-Warning "   Failed to get or set permissions for '$($item.ServerRelativeUrl)': $_"
+    }
+
+    # Recurse into child folders
+    Set-PermissionsRecursively -folderUrl $item.ServerRelativeUrl.Substring(1)
+}
+
 }
 
 
