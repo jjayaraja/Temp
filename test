@@ -1,59 +1,53 @@
-$library = "Documents"
-$groupRead = "A-Z Viewers"
-$groupContribute = "Subfolder Contributors"
+$library = "AE"
+$groupRead = "A-Z Viewers"            # Group A
+$groupContribute = "Subfolder Contributors"  # Group B
+$rootFolderName = "A"
 
-function Set-PermissionsRecursively {
-    param (
-        [string]$folderUrl
-    )
+# 1. Break inheritance on folder A and assign Read to Group A
+$rootItem = Get-PnPListItem -List $library | Where-Object { $_["FileLeafRef"] -eq $rootFolderName }
+if ($rootItem) {
+    Write-Host "Breaking inheritance on folder A..."
+    Set-PnPListItemPermission -List $library -Identity $rootItem.Id -InheritPermissions:$false
+    Set-PnPListItemPermission -List $library -Identity $rootItem.Id -Group $groupRead -AddRole "Read"
+}
 
-    $items = Get-PnPFolderItem -FolderSiteRelativeUrl $folderUrl -ItemType Folder
+# 2. Get all immediate children of A
+$folderUrl = $rootItem["FileRef"] -replace "^/sites/[^/]+/", ""
+$children = Get-PnPFolderItem -FolderSiteRelativeUrl $folderUrl
 
-foreach ($item in $items) {
-    Write-Host " > Subfolder '$($item.Name)'"
+foreach ($child in $children) {
+    Write-Host "`nProcessing '$($child.Name)' [$($child.ItemType)]"
 
     try {
-        # Explicitly include ListItemAllFields
-        $folderObj = Get-PnPFolder -Url $item.ServerRelativeUrl -Includes ListItemAllFields
-        $listItemId = $folderObj.ListItemAllFields.Id
+        # Get list item ID (folder or file)
+        $childFolder = Get-PnPFolder -Url $child.ServerRelativeUrl -Includes ListItemAllFields
+        $listItemId = $childFolder.ListItemAllFields.Id
 
-        if ($null -eq $listItemId) {
-            Write-Warning "   ListItemAllFields.Id is null for '$($item.ServerRelativeUrl)'"
-            continue
-        }
-
-        # Set permissions
+        # Break and assign Contribute
         Set-PnPListItemPermission -List $library -Identity $listItemId -InheritPermissions:$false
         Set-PnPListItemPermission -List $library -Identity $listItemId -Group $groupContribute -AddRole "Contribute"
+
+        # 3. Reset all child items of this folder to re-inherit
+        if ($child.ItemType -eq "Folder") {
+            $childFolderUrl = $child.ServerRelativeUrl.TrimStart('/')
+            $descendants = Get-PnPFolderItem -FolderSiteRelativeUrl $childFolderUrl -Recursive
+
+            foreach ($desc in $descendants) {
+                try {
+                    $descFolder = Get-PnPFolder -Url $desc.ServerRelativeUrl -Includes ListItemAllFields
+                    $descId = $descFolder.ListItemAllFields.Id
+
+                    if ($descId) {
+                        Write-Host " - Resetting inheritance for: $($desc.ServerRelativeUrl)"
+                        Set-PnPListItemPermission -List $library -Identity $descId -InheritPermissions:$true
+                    }
+                } catch {
+                    Write-Warning "   Failed to reset inheritance on $($desc.ServerRelativeUrl): $_"
+                }
+            }
+        }
+
+    } catch {
+        Write-Warning "Failed to process '$($child.Name)': $_"
     }
-    catch {
-        Write-Warning "   Failed to get or set permissions for '$($item.ServerRelativeUrl)': $_"
-    }
-
-    # Recurse into child folders
-    Set-PermissionsRecursively -folderUrl $item.ServerRelativeUrl.Substring(1)
-}
-
-
-}
-
-
-# Get all A–Z top folders in the library
-$folders = Get-PnPListItem -List $library -PageSize 1000 | Where-Object {
-    $_.FileSystemObjectType -eq "Folder" -and $_["FileLeafRef"] -match '^[A-Z]$'
-}
-
-foreach ($folder in $folders) {
-    $name = $folder["FileLeafRef"]
-    Write-Host "`nProcessing top-level folder '$name'..."
-
-    # Break inheritance and assign Read to Group A
-    Set-PnPListItemPermission -List $library -Identity $folder.Id -InheritPermissions:$false
-    Set-PnPListItemPermission -List $library -Identity $folder.Id -Group $groupRead -AddRole "Read"
-
-    # Get full folder path and convert to site-relative
-    $folderUrl = $folder["FileRef"] -replace "^/sites/[^/]+/", ""
-
-    # Recursively apply permissions to subfolders
-    Set-PermissionsRecursively -folderUrl $folderUrl
 }
