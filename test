@@ -13,7 +13,7 @@ function Set-PermissionsRecursively {
         Write-Host " > Subfolder '$($item.Name)'"
 
         # Get list item by folder path
-        $listItem = Get-PnPListItem -List $library -Query "<View><Query><Where><Eq><FieldRef Name='FileRef'/><Value Type='Text'>$($item.ServerRelativeUrl)</Value></Eq></Where></Query></View>"
+$listItem = Get-PnPListItem -List $library -FolderServerRelativeUrl $item.ServerRelativeUrl | Where-Object { $_.FileSystemObjectType -eq "Folder" -and $_["FileLeafRef"] -eq $item.Name }
 
         if ($listItem) {
             # Break inheritance and assign Contribute
