@@ -2,7 +2,6 @@ $library = "Documents"
 $groupRead = "A-Z Viewers"
 $groupContribute = "Subfolder Contributors"
 
-# Helper to recursively set permission on subfolders
 function Set-PermissionsRecursively {
     param (
         [string]$folderUrl
@@ -13,14 +12,22 @@ function Set-PermissionsRecursively {
     foreach ($item in $items) {
         Write-Host " > Subfolder '$($item.Name)'"
 
-        # Break inheritance and assign Contribute
-        Set-PnPFolderPermission -Folder $item.ServerRelativeUrl -InheritPermissions:$false
-        Set-PnPFolderPermission -Folder $item.ServerRelativeUrl -Group $groupContribute -AddRole "Contribute"
+        # Get list item by folder path
+        $listItem = Get-PnPListItem -List $library -Query "<View><Query><Where><Eq><FieldRef Name='FileRef'/><Value Type='Text'>$($item.ServerRelativeUrl)</Value></Eq></Where></Query></View>"
+
+        if ($listItem) {
+            # Break inheritance and assign Contribute
+            Set-PnPListItemPermission -List $library -Identity $listItem.Id -InheritPermissions:$false
+            Set-PnPListItemPermission -List $library -Identity $listItem.Id -Group $groupContribute -AddRole "Contribute"
+        } else {
+            Write-Warning "   Could not find list item for '$($item.ServerRelativeUrl)'"
+        }
 
         # Recurse into child folders
-        Set-PermissionsRecursively -folderUrl $item.ServerRelativeUrl.Substring(1)  # Convert server-relative to site-relative
+        Set-PermissionsRecursively -folderUrl $item.ServerRelativeUrl.Substring(1)
     }
 }
+
 
 # Get all A–Z top folders in the library
 $folders = Get-PnPListItem -List $library -PageSize 1000 | Where-Object {
