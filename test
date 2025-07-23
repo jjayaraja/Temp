@@ -1,0 +1,25 @@
+$library = "Documents"
+$folders = Get-PnPListItem -List $library -PageSize 1000 | Where-Object { $_.FileSystemObjectType -eq "Folder" }
+foreach ($folder in $folders) {
+  $name = $folder.FieldValues["FileLeafRef"]
+  if ($name -match '^[A-Z]$') {
+    Write-Host "Processing '$name'..."
+
+    # Top-level A–Z folder: break inheritance and assign Read
+    Set-PnPListItemPermission -List $library -Identity $folder.Id -InheritPermissions:$false
+    Set-PnPListItemPermission -List $library -Identity $folder.Id -Group "A-Z Viewers" -AddRole "Read"
+
+    $url = $folder["FileRef"]
+    $subs = Get-PnPFolderItem -FolderSiteRelativeUrl $url -ItemType Folder -Recursive
+
+    foreach ($sub in $subs) {
+      if ($sub.Name -ne $name) {
+        Write-Host " > Subfolder '$($sub.Name)'"
+
+        # Break inheritance & assign Contribute
+        Set-PnPFolderPermission -Folder $sub.ServerRelativeUrl -InheritPermissions:$false
+        Set-PnPFolderPermission -Folder $sub.ServerRelativeUrl -Group "Subfolder Contributors" -AddRole "Contribute"
+      }
+    }
+  }
+}
