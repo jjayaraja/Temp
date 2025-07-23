@@ -2,37 +2,42 @@ $library = "Documents"
 $groupRead = "A-Z Viewers"
 $groupContribute = "Subfolder Contributors"
 
-# Get all folders in the library
-$folders = Get-PnPListItem -List $library -PageSize 1000 | Where-Object { $_.FileSystemObjectType -eq "Folder" }
+# Helper to recursively set permission on subfolders
+function Set-PermissionsRecursively {
+    param (
+        [string]$folderUrl
+    )
+
+    $items = Get-PnPFolderItem -FolderSiteRelativeUrl $folderUrl -ItemType Folder
+
+    foreach ($item in $items) {
+        Write-Host " > Subfolder '$($item.Name)'"
+
+        # Break inheritance and assign Contribute
+        Set-PnPFolderPermission -Folder $item.ServerRelativeUrl -InheritPermissions:$false
+        Set-PnPFolderPermission -Folder $item.ServerRelativeUrl -Group $groupContribute -AddRole "Contribute"
+
+        # Recurse into child folders
+        Set-PermissionsRecursively -folderUrl $item.ServerRelativeUrl.Substring(1)  # Convert server-relative to site-relative
+    }
+}
+
+# Get all A–Z top folders in the library
+$folders = Get-PnPListItem -List $library -PageSize 1000 | Where-Object {
+    $_.FileSystemObjectType -eq "Folder" -and $_["FileLeafRef"] -match '^[A-Z]$'
+}
 
 foreach ($folder in $folders) {
-    $name = $folder.FieldValues["FileLeafRef"]
-    if ($name -match '^[A-Z]$') {
-        Write-Host "`nProcessing top-level folder '$name'..."
+    $name = $folder["FileLeafRef"]
+    Write-Host "`nProcessing top-level folder '$name'..."
 
-        # Break inheritance and assign Read to A-Z Viewers
-        Set-PnPListItemPermission -List $library -Identity $folder.Id -InheritPermissions:$false
-        Set-PnPListItemPermission -List $library -Identity $folder.Id -Group $groupRead -AddRole "Read"
+    # Break inheritance and assign Read to Group A
+    Set-PnPListItemPermission -List $library -Identity $folder.Id -InheritPermissions:$false
+    Set-PnPListItemPermission -List $library -Identity $folder.Id -Group $groupRead -AddRole "Read"
 
-        # Get site-relative URL of this folder
-        $folderItem = Get-PnPFolder -Url $folder["FileRef"]
-        $folderUrl = $folderItem.ServerRelativeUrl.Substring($folderItem.ServerRelativeUrl.IndexOf("/",1))  # Normalize
+    # Get full folder path and convert to site-relative
+    $folderUrl = $folder["FileRef"] -replace "^/sites/[^/]+/", ""
 
-        # Get subfolders inside the A-Z folder
-        $subs = Get-PnPFolderItem -FolderSiteRelativeUrl $folderUrl -ItemType Folder -Recursive
-
-        if ($subs) {
-            foreach ($sub in $subs) {
-                if ($sub.Name -ne $name) {
-                    Write-Host " > Setting permissions on subfolder '$($sub.Name)'..."
-
-                    # Break inheritance and assign Contribute
-                    Set-PnPFolderPermission -Folder $sub.ServerRelativeUrl -InheritPermissions:$false
-                    Set-PnPFolderPermission -Folder $sub.ServerRelativeUrl -Group $groupContribute -AddRole "Contribute"
-                }
-            }
-        } else {
-            Write-Warning "No subfolders found under '$name'"
-        }
-    }
+    # Recursively apply permissions to subfolders
+    Set-PermissionsRecursively -folderUrl $folderUrl
 }
