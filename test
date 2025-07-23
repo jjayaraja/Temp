@@ -9,13 +9,18 @@ function Set-PermissionsRecursively {
 
     $items = Get-PnPFolderItem -FolderSiteRelativeUrl $folderUrl -ItemType Folder
 
-   foreach ($item in $items) {
+foreach ($item in $items) {
     Write-Host " > Subfolder '$($item.Name)'"
 
     try {
-        # Get the list item behind the folder
-        $folderObj = Get-PnPFolder -Url $item.ServerRelativeUrl
+        # Explicitly include ListItemAllFields
+        $folderObj = Get-PnPFolder -Url $item.ServerRelativeUrl -Includes ListItemAllFields
         $listItemId = $folderObj.ListItemAllFields.Id
+
+        if ($null -eq $listItemId) {
+            Write-Warning "   ListItemAllFields.Id is null for '$($item.ServerRelativeUrl)'"
+            continue
+        }
 
         # Set permissions
         Set-PnPListItemPermission -List $library -Identity $listItemId -InheritPermissions:$false
@@ -28,6 +33,7 @@ function Set-PermissionsRecursively {
     # Recurse into child folders
     Set-PermissionsRecursively -folderUrl $item.ServerRelativeUrl.Substring(1)
 }
+
 
 }
 
