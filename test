@@ -1,53 +1,59 @@
 $library = "AE"
-$groupRead = "A-Z Viewers"            # Group A
+$groupRead = "A-Z Viewers"                   # Group A
 $groupContribute = "Subfolder Contributors"  # Group B
-$rootFolderName = "A"
 
-# 1. Break inheritance on folder A and assign Read to Group A
-$rootItem = Get-PnPListItem -List $library | Where-Object { $_["FileLeafRef"] -eq $rootFolderName }
-if ($rootItem) {
-    Write-Host "Breaking inheritance on folder A..."
-    Set-PnPListItemPermission -List $library -Identity $rootItem.Id -InheritPermissions:$false
-    Set-PnPListItemPermission -List $library -Identity $rootItem.Id -Group $groupRead -AddRole "Read"
+# Get all top-level folders in the AE library
+$folders = Get-PnPListItem -List $library -PageSize 1000 | Where-Object {
+    $_.FileSystemObjectType -eq "Folder" -and $_["FileLeafRef"] -match '^[A-Z]$'
 }
 
-# 2. Get all immediate children of A
-$folderUrl = $rootItem["FileRef"] -replace "^/sites/[^/]+/", ""
-$children = Get-PnPFolderItem -FolderSiteRelativeUrl $folderUrl
+foreach ($folder in $folders) {
+    $folderName = $folder["FileLeafRef"]
+    Write-Host "`nProcessing top-level folder '$folderName'..."
 
-foreach ($child in $children) {
-    Write-Host "`nProcessing '$($child.Name)' [$($child.ItemType)]"
+    # 1. Break inheritance on A–Z folder and assign Read to Group A
+    Set-PnPListItemPermission -List $library -Identity $folder.Id -InheritPermissions:$false
+    Set-PnPListItemPermission -List $library -Identity $folder.Id -Group $groupRead -AddRole "Read"
 
-    try {
-        # Get list item ID (folder or file)
-        $childFolder = Get-PnPFolder -Url $child.ServerRelativeUrl -Includes ListItemAllFields
-        $listItemId = $childFolder.ListItemAllFields.Id
+    # 2. Process immediate children (folders/files) of A–Z (like A1, A2, F1, F2, etc.)
+    $folderUrl = $folder["FileRef"] -replace "^/sites/[^/]+/", ""
+    $children = Get-PnPFolderItem -FolderSiteRelativeUrl $folderUrl
 
-        # Break and assign Contribute
-        Set-PnPListItemPermission -List $library -Identity $listItemId -InheritPermissions:$false
-        Set-PnPListItemPermission -List $library -Identity $listItemId -Group $groupContribute -AddRole "Contribute"
+    foreach ($child in $children) {
+        Write-Host "  Processing '$($child.Name)' [$($child.ItemType)]"
 
-        # 3. Reset all child items of this folder to re-inherit
-        if ($child.ItemType -eq "Folder") {
-            $childFolderUrl = $child.ServerRelativeUrl.TrimStart('/')
-            $descendants = Get-PnPFolderItem -FolderSiteRelativeUrl $childFolderUrl -Recursive
+        try {
+            $childFolder = Get-PnPFolder -Url $child.ServerRelativeUrl -Includes ListItemAllFields
+            $childId = $childFolder.ListItemAllFields.Id
 
-            foreach ($desc in $descendants) {
-                try {
-                    $descFolder = Get-PnPFolder -Url $desc.ServerRelativeUrl -Includes ListItemAllFields
-                    $descId = $descFolder.ListItemAllFields.Id
+            if ($childId) {
+                # Break inheritance and assign Contribute to Group B
+                Set-PnPListItemPermission -List $library -Identity $childId -InheritPermissions:$false
+                Set-PnPListItemPermission -List $library -Identity $childId -Group $groupContribute -AddRole "Contribute"
+            }
 
-                    if ($descId) {
-                        Write-Host " - Resetting inheritance for: $($desc.ServerRelativeUrl)"
-                        Set-PnPListItemPermission -List $library -Identity $descId -InheritPermissions:$true
+            # 3. Reset permissions on all descendants inside this folder
+            if ($child.ItemType -eq "Folder") {
+                $childUrl = $child.ServerRelativeUrl.TrimStart('/')
+                $descendants = Get-PnPFolderItem -FolderSiteRelativeUrl $childUrl -Recursive
+
+                foreach ($desc in $descendants) {
+                    try {
+                        $descFolder = Get-PnPFolder -Url $desc.ServerRelativeUrl -Includes ListItemAllFields
+                        $descId = $descFolder.ListItemAllFields.Id
+
+                        if ($descId) {
+                            Write-Host "    Resetting inheritance for: $($desc.ServerRelativeUrl)"
+                            Set-PnPListItemPermission -List $library -Identity $descId -InheritPermissions:$true
+                        }
+                    } catch {
+                        Write-Warning "    Could not reset inheritance on $($desc.ServerRelativeUrl): $_"
                     }
-                } catch {
-                    Write-Warning "   Failed to reset inheritance on $($desc.ServerRelativeUrl): $_"
                 }
             }
-        }
 
-    } catch {
-        Write-Warning "Failed to process '$($child.Name)': $_"
+        } catch {
+            Write-Warning "  Failed to process '$($child.Name)': $_"
+        }
     }
 }
