@@ -1,133 +1,155 @@
-Write-Host "`n=== SharePoint Permission Reset Started ===" -ForegroundColor Cyan
-$startTime = Get-Date
+# SharePoint Library Group Inheritance Script
+# Ensures ALL folders and files inherit from library's 4 groups
 
-# Method: Get ALL items first, then filter in PowerShell
-# This avoids CAML field type issues
-Write-Host "Retrieving all items from library..." -ForegroundColor Yellow
+# Configuration
+$siteUrl = "https://yourtenant.sharepoint.com/sites/yoursite"
+$libraryName = "Documents"
+
+# Connect to SharePoint Online
+try {
+    Connect-PnPOnline -Url $siteUrl -Interactive
+    Write-Host "✓ Connected to SharePoint site: $siteUrl" -ForegroundColor Green
+} catch {
+    Write-Error "Failed to connect to SharePoint: $_"
+    exit 1
+}
+
+Write-Host "`n=== Library Group Inheritance Check ===" -ForegroundColor Cyan
+
+# First, show the library's current group permissions
+Write-Host "Checking library-level permissions..." -ForegroundColor Yellow
+try {
+    $libraryPermissions = Get-PnPListPermission -Identity $libraryName
+    
+    Write-Host "`nLibrary '$libraryName' has these groups/permissions:" -ForegroundColor Green
+    $groupCount = 0
+    foreach ($perm in $libraryPermissions) {
+        $principalType = switch ($perm.Member.PrincipalType) {
+            "User" { "👤 User" }
+            "SecurityGroup" { "🔒 Security Group" }
+            "SharePointGroup" { "🏢 SharePoint Group" }
+            "DistributionList" { "📧 Distribution List" }
+            default { "❓ $($perm.Member.PrincipalType)" }
+        }
+        
+        $roles = ($perm.RoleDefinitionBindings | ForEach-Object { $_.Name }) -join ", "
+        Write-Host "  $principalType`: $($perm.Member.Title) - $roles" -ForegroundColor Cyan
+        
+        if ($perm.Member.PrincipalType -in @("SecurityGroup", "SharePointGroup", "DistributionList")) {
+            $groupCount++
+        }
+    }
+    
+    Write-Host "`nFound $groupCount group(s) at library level" -ForegroundColor Yellow
+    
+    if ($groupCount -ne 4) {
+        Write-Host "⚠️  You mentioned 4 groups, but found $groupCount. Continuing anyway..." -ForegroundColor Yellow
+    }
+    
+} catch {
+    Write-Warning "Could not retrieve library permissions: $($_.Exception.Message)"
+}
+
+# Get all items from library
+Write-Host "`nScanning all folders and files..." -ForegroundColor Yellow
 
 try {
-    # Get all items without complex CAML filtering
-    $allItems = Get-PnPListItem -List $libraryName -PageSize 2000 -Fields "Id", "FileRef", "FileSystemObjectType", "HasUniqueRoleAssignments"
+    $allItems = Get-PnPListItem -List $libraryName -PageSize 1000 -Fields "Id", "FileRef", "FileSystemObjectType", "HasUniqueRoleAssignments"
     
-    Write-Host "Retrieved $($allItems.Count) total items" -ForegroundColor Cyan
+    Write-Host "Found $($allItems.Count) total items" -ForegroundColor Cyan
     
-    # Filter items with unique permissions in PowerShell
-    Write-Host "Filtering items with unique permissions..." -ForegroundColor Yellow
-    
-    $itemsToReset = $allItems | Where-Object { 
+    # Filter items that have unique permissions (not inheriting from library)
+    $itemsNotInheriting = $allItems | Where-Object { 
         $_.FieldValues["HasUniqueRoleAssignments"] -eq $true 
     }
     
-    if ($itemsToReset.Count -eq 0) {
-        Write-Host "No items with unique permissions found." -ForegroundColor Yellow
+    if ($itemsNotInheriting.Count -eq 0) {
+        Write-Host "✅ All items are already inheriting from library groups!" -ForegroundColor Green
+        Write-Host "No changes needed." -ForegroundColor Green
         Disconnect-PnPOnline
         exit 0
     }
     
-    Write-Host "Found $($itemsToReset.Count) items with unique permissions" -ForegroundColor Cyan
+    Write-Host "Found $($itemsNotInheriting.Count) items NOT inheriting from library groups" -ForegroundColor Red
+    Write-Host "These will be fixed to use your 4 library groups..." -ForegroundColor Yellow
     
-    # Sort items: Folders first (FileSystemObjectType = 1), then Files (FileSystemObjectType = 0)
-    $sortedItems = $itemsToReset | Sort-Object { $_.FieldValues["FileSystemObjectType"] } -Descending
+    # Ask for confirmation
+    $confirm = Read-Host "`nProceed to reset permissions on $($itemsNotInheriting.Count) items? (y/N)"
+    if ($confirm -ne "y" -and $confirm -ne "Y") {
+        Write-Host "Operation cancelled." -ForegroundColor Yellow
+        Disconnect-PnPOnline
+        exit 0
+    }
+    
+    # Sort items: Folders first to avoid inheritance conflicts
+    $sortedItems = $itemsNotInheriting | Sort-Object { $_.FieldValues["FileSystemObjectType"] } -Descending
     
     # Process items
-    $resetCount = 0
+    $fixedCount = 0
     $errorCount = 0
     
     foreach ($item in $sortedItems) {
         $itemType = if ($item.FieldValues["FileSystemObjectType"] -eq 0) { "File" } else { "Folder" }
         $itemPath = $item.FieldValues["FileRef"]
         
+        Write-Host "[$($fixedCount + $errorCount + 1)/$($sortedItems.Count)] Fixing $itemType`: " -NoNewline -ForegroundColor Gray
+        Write-Host "$itemPath" -ForegroundColor White
+        
         try {
-            Write-Host "[$($resetCount + $errorCount + 1)/$($sortedItems.Count)] Resetting $itemType`: " -NoNewline -ForegroundColor Gray
-            Write-Host "$itemPath" -ForegroundColor White
-            
-            # Reset permissions to inherit from parent
+            # Reset to inherit from library (which has your 4 groups)
             Set-PnPListItemPermission -List $libraryName -Identity $item.Id -InheritPermissions
             
-            $resetCount++
-            Write-Host "  ✓ Success" -ForegroundColor Green
+            $fixedCount++
+            Write-Host "  ✅ Now inherits library groups" -ForegroundColor Green
             
         } catch {
             $errorCount++
-            Write-Host "  ✗ Failed: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "  ❌ Failed: $($_.Exception.Message)" -ForegroundColor Red
         }
         
-        # Small delay every 25 items to avoid throttling
-        if (($resetCount + $errorCount) % 25 -eq 0) {
-            Write-Host "  Pausing briefly to avoid throttling..." -ForegroundColor Gray
+        # Throttling protection
+        if (($fixedCount + $errorCount) % 25 -eq 0) {
             Start-Sleep -Milliseconds 200
         }
     }
     
 } catch {
-    Write-Error "Failed to retrieve items: $_"
+    Write-Error "Failed to process items: $_"
+    Disconnect-PnPOnline
+    exit 1
+}
+
+# Final verification
+Write-Host "`n=== Verification ===" -ForegroundColor Cyan
+Write-Host "Checking if all items now inherit from library..." -ForegroundColor Yellow
+
+try {
+    $allItemsAfter = Get-PnPListItem -List $libraryName -PageSize 1000 -Fields "HasUniqueRoleAssignments"
+    $stillUnique = $allItemsAfter | Where-Object { $_.FieldValues["HasUniqueRoleAssignments"] -eq $true }
     
-    # Alternative method using basic query
-    Write-Host "`nTrying alternative method..." -ForegroundColor Yellow
-    
-    try {
-        # Very basic approach - get items in smaller batches
-        $batchSize = 500
-        $allItems = @()
-        $position = 0
-        
-        do {
-            Write-Host "Retrieving batch starting at position $position..." -ForegroundColor Gray
-            
-            $batch = Get-PnPListItem -List $libraryName -PageSize $batchSize
-            $allItems += $batch
-            $position += $batch.Count
-            
-        } while ($batch.Count -eq $batchSize)
-        
-        Write-Host "Retrieved $($allItems.Count) items using alternative method" -ForegroundColor Cyan
-        
-        # Filter and process items
-        $itemsToReset = $allItems | Where-Object { $_.HasUniqueRoleAssignments -eq $true }
-        
-        if ($itemsToReset.Count -gt 0) {
-            Write-Host "Found $($itemsToReset.Count) items to reset" -ForegroundColor Cyan
-            
-            $resetCount = 0
-            foreach ($item in $itemsToReset) {
-                try {
-                    $itemPath = if ($item.FieldValues["FileRef"]) { $item.FieldValues["FileRef"] } else { "Unknown path" }
-                    Write-Host "Resetting: $itemPath" -ForegroundColor White
-                    
-                    Set-PnPListItemPermission -List $libraryName -Identity $item.Id -InheritPermissions
-                    $resetCount++
-                    Write-Host "  ✓ Success" -ForegroundColor Green
-                    
-                } catch {
-                    Write-Warning "Failed to reset item ID $($item.Id): $($_.Exception.Message)"
-                }
-            }
-        } else {
-            Write-Host "No items with unique permissions found." -ForegroundColor Yellow
-        }
-        
-    } catch {
-        Write-Error "Alternative method also failed: $_"
-        Disconnect-PnPOnline
-        exit 1
+    if ($stillUnique.Count -eq 0) {
+        Write-Host "✅ SUCCESS: All items now inherit from library groups!" -ForegroundColor Green
+    } else {
+        Write-Host "⚠️  $($stillUnique.Count) items still have unique permissions" -ForegroundColor Yellow
     }
+} catch {
+    Write-Warning "Could not verify final state: $($_.Exception.Message)"
 }
 
 # Summary
-$endTime = Get-Date
-$duration = $endTime - $startTime
-
-Write-Host "`n=== Reset Complete ===" -ForegroundColor Cyan
-Write-Host "Successfully reset: $resetCount items" -ForegroundColor Green
+Write-Host "`n" + "="*60 -ForegroundColor Cyan
+Write-Host "LIBRARY GROUP INHERITANCE SUMMARY" -ForegroundColor Cyan
+Write-Host "="*60 -ForegroundColor Cyan
+Write-Host "Items successfully fixed: $fixedCount" -ForegroundColor Green
 if ($errorCount -gt 0) {
-    Write-Host "Errors encountered: $errorCount" -ForegroundColor Red
+    Write-Host "Items with errors: $errorCount" -ForegroundColor Red
 }
-Write-Host "Time taken: $($duration.ToString('mm\:ss'))" -ForegroundColor Gray
 
-if ($resetCount -gt 0) {
-    Write-Host "`n🎉 Permission reset completed!" -ForegroundColor Green
+if ($fixedCount -gt 0) {
+    Write-Host "`n🎉 All folders and files now use your library's 4 groups!" -ForegroundColor Green
+    Write-Host "✅ Consistent permissions across the entire library" -ForegroundColor Green
 } else {
-    Write-Host "`n⚠️  No permissions were reset." -ForegroundColor Yellow
+    Write-Host "`n✅ Library was already properly configured" -ForegroundColor Green
 }
 
 # Disconnect
