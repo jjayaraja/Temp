@@ -1,14 +1,61 @@
-# Reset folders
-Get-PnPFolder -Url $listName -Includes ListItemAllFields | ForEach-Object {
-  $_ | Set-PnPFolderPermission -List $listName -InheritPermissions
+# Connect to your SharePoint Online site
+$siteUrl = "https://yourtenant.sharepoint.com/sites/yoursite"
+$libraryName = "Documents"
+
+Connect-PnPOnline -Url $siteUrl -Interactive
+$ctx = Get-PnPContext()
+
+# === 1. Reset FOLDER Permissions ===
+
+# Start with root folder
+$rootFolder = Get-PnPFolder -Url $libraryName
+
+# Recursive function to process folders
+function Reset-FolderPermissionsRecursively {
+    param([Microsoft.SharePoint.Client.Folder]$Folder)
+
+    try {
+        $listItem = $Folder.ListItemAllFields
+        $ctx.Load($listItem)
+        $ctx.ExecuteQuery()
+
+        if ($listItem.HasUniqueRoleAssignments -eq $true) {
+            Write-Host "Resetting folder: $($Folder.ServerRelativeUrl)"
+            $listItem.ResetRoleInheritance()
+            $listItem.Update()
+            $ctx.ExecuteQuery()
+        }
+
+        # Now process subfolders
+        $ctx.Load($Folder.Folders)
+        $ctx.ExecuteQuery()
+        foreach ($subfolder in $Folder.Folders) {
+            if ($subfolder.Name -ne "Forms") {
+                Reset-FolderPermissionsRecursively -Folder $subfolder
+            }
+        }
+    } catch {
+        Write-Warning "Error processing folder: $($Folder.ServerRelativeUrl) - $_"
+    }
 }
 
-# Reset files
-$items = Get-PnPListItem -List $listName -PageSize 500 -Fields "Id","HasUniqueRoleAssignments","FileRef"
+Reset-FolderPermissionsRecursively -Folder $rootFolder
+
+
+# === 2. Reset FILE Permissions ===
+
+$items = Get-PnPListItem -List $libraryName -PageSize 1000 -Fields "Id", "FileRef", "FileSystemObjectType", "HasUniqueRoleAssignments"
+
 foreach ($item in $items) {
-  if ($item.FieldValues["HasUniqueRoleAssignments"]) {
-    Write-Host "Resetting file: $($item.FieldValues['FileRef'])"
-    $item.ListItemAllFields.ResetRoleInheritance()
-  }
+    if ($item.FieldValues["FileSystemObjectType"] -eq "File" -and $item.FieldValues["HasUniqueRoleAssignments"] -eq $true) {
+        try {
+            Write-Host "Resetting file: $($item.FieldValues['FileRef'])"
+            $item.Context.Load($item)
+            $item.ResetRoleInheritance()
+            $item.Update()
+            $ctx.ExecuteQuery()
+        } catch {
+            Write-Warning "Failed to reset file: $($item.FieldValues['FileRef']) - $_"
+        }
+    }
 }
-Invoke-PnPQuery
