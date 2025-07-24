@@ -1,0 +1,20 @@
+# Set your library name
+$libraryName = "Documents"
+
+# Get all items in the library recursively
+$items = Get-PnPListItem -List $libraryName -PageSize 2000 -Fields "FileRef", "FileSystemObjectType"
+
+foreach ($item in $items) {
+    $fileRef = $item.FieldValues["FileRef"]
+    $isFolder = $item.FieldValues["FileSystemObjectType"] -eq "Folder"
+
+    try {
+        # Break inheritance only if unique permissions exist
+        Set-PnPListItemPermissionInheritance -List $libraryName -Identity $item -InheritPermissions
+
+        Write-Host "Inherited permissions for: $fileRef" -ForegroundColor Green
+    }
+    catch {
+        Write-Warning "Failed to set inheritance for $fileRef: $_"
+    }
+}
