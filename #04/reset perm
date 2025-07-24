@@ -1,16 +1,16 @@
 Connect-PnPOnline -Url $siteUrl -Interactive
-$ctx = Get-PnPContext
-$listName = "YourLibraryName"
 
-# Get all items (files + folders) with paging
-$items = Get-PnPListItem -List $listName -PageSize 500 -Fields "Id","HasUniqueRoleAssignments","FileRef","FileSystemObjectType"
+$log = @()
+
+$items = Get-PnPListItem -List $listName -PageSize 500 -Fields "Id","HasUniqueRoleAssignments","FileRef"
 
 foreach ($item in $items) {
-    $hasUnique = $item.FieldValues["HasUniqueRoleAssignments"]
-    $path = $item.FieldValues["FileRef"]
-
-    if ($hasUnique -eq $true) {
-        Write-Host "Resetting inheritance on item #$($item.Id): $path"
+    if ($item.FieldValues["HasUniqueRoleAssignments"]) {
         Set-PnPListItemPermission -List $listName -Identity $item.Id -InheritPermissions
+        $log += [pscustomobject]@{Id = $item.Id; Path = $item.FieldValues["FileRef"]; Status = "Reset"}
+    } else {
+        $log += [pscustomobject]@{Id = $item.Id; Path = $item.FieldValues["FileRef"]; Status = "Inherited"}
     }
 }
+
+$log | Export-Csv -Path "inheritance-results.csv" -NoTypeInformation
