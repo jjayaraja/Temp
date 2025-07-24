@@ -1,16 +1,14 @@
-Connect-PnPOnline -Url $siteUrl -Interactive
-
-$log = @()
-
-$items = Get-PnPListItem -List $listName -PageSize 500 -Fields "Id","HasUniqueRoleAssignments","FileRef"
-
-foreach ($item in $items) {
-    if ($item.FieldValues["HasUniqueRoleAssignments"]) {
-        Set-PnPListItemPermission -List $listName -Identity $item.Id -InheritPermissions
-        $log += [pscustomobject]@{Id = $item.Id; Path = $item.FieldValues["FileRef"]; Status = "Reset"}
-    } else {
-        $log += [pscustomobject]@{Id = $item.Id; Path = $item.FieldValues["FileRef"]; Status = "Inherited"}
-    }
+# Reset folders
+Get-PnPFolder -Url $listName -Includes ListItemAllFields | ForEach-Object {
+  $_ | Set-PnPFolderPermission -List $listName -InheritPermissions
 }
 
-$log | Export-Csv -Path "inheritance-results.csv" -NoTypeInformation
+# Reset files
+$items = Get-PnPListItem -List $listName -PageSize 500 -Fields "Id","HasUniqueRoleAssignments","FileRef"
+foreach ($item in $items) {
+  if ($item.FieldValues["HasUniqueRoleAssignments"]) {
+    Write-Host "Resetting file: $($item.FieldValues['FileRef'])"
+    $item.ListItemAllFields.ResetRoleInheritance()
+  }
+}
+Invoke-PnPQuery
