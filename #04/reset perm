@@ -1,3 +1,20 @@
+# SharePoint Permission Verification Script
+# Confirms all items are properly using library groups
+
+# Configuration
+$siteUrl = "https://yourtenant.sharepoint.com/sites/yoursite"
+$libraryName = "Documents"
+
+# Connect to SharePoint Online
+try {
+    Connect-PnPOnline -Url $siteUrl -Interactive
+    Write-Host "✅ Connected to SharePoint site: $siteUrl" -ForegroundColor Green
+} catch {
+    Write-Error "Failed to connect to SharePoint: $_"
+    exit 1
+}
+
+Write-Host "`n=== SharePoint Permission Verification ===" -ForegroundColor Cyan
 
 # Show library-level permissions (your expected 4 groups)
 Write-Host "`n1️⃣ LIBRARY-LEVEL PERMISSIONS" -ForegroundColor Yellow
@@ -15,11 +32,11 @@ try {
             "User" { "👤 User" }
             "SecurityGroup" { "🔒 Security Group" }
             "SharePointGroup" { "🏢 SharePoint Group" }  
-            "DistributionList" { "📧 Distribution List"
+            "DistributionList" { "📧 Distribution List" }
             default { "❓ $($perm.Member.PrincipalType)" }
         }
         
-        $roles = ($perm.RoleDefinitionBindings | ForEach-Object { $_.Name }) -join ", "
+        $roles = ($perm.RoleDefinitionBindings | ForEach-Object { $_.Name }) -join ', '
         Write-Host "  $principalType`: $($perm.Member.Title)" -ForegroundColor Cyan
         Write-Host "    Permissions: $roles" -ForegroundColor Gray
         
@@ -106,7 +123,7 @@ try {
                             default { "❓" }
                         }
                         
-                        $roles = ($perm.RoleDefinitionBindings | ForEach-Object { $_.Name }) -join ", "
+                        $roles = ($perm.RoleDefinitionBindings | ForEach-Object { $_.Name }) -join ', '
                         Write-Host "    $principalType $($perm.Member.Title) - $roles" -ForegroundColor Gray
                     }
                 }
