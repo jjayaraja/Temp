@@ -1,22 +1,16 @@
-# Configuration
-$siteUrl     = "https://yourtenant.sharepoint.com/sites/yoursite"
-$listName    = "Documents"  # change to your library name
-
-# Connect
 Connect-PnPOnline -Url $siteUrl -Interactive
 $ctx = Get-PnPContext
+$listName = "YourLibraryName"
 
-# Get all items (files+folders)
-$items = Get-PnPListItem -List $listName -PageSize 500 -Fields FileRef, FileSystemObjectType, HasUniqueRoleAssignments
+# Get all items (files + folders) with paging
+$items = Get-PnPListItem -List $listName -PageSize 500 -Fields "Id","HasUniqueRoleAssignments","FileRef","FileSystemObjectType"
 
 foreach ($item in $items) {
     $hasUnique = $item.FieldValues["HasUniqueRoleAssignments"]
-    $path      = $item.FieldValues["FileRef"]
+    $path = $item.FieldValues["FileRef"]
 
-    if ($hasUnique) {
-        Write-Host "🔄 Resetting inheritance on: $path"
-        $item.ResetRoleInheritance()
-        $item.Update()
-        $ctx.ExecuteQuery()
+    if ($hasUnique -eq $true) {
+        Write-Host "Resetting inheritance on item #$($item.Id): $path"
+        Set-PnPListItemPermission -List $listName -Identity $item.Id -InheritPermissions
     }
 }
