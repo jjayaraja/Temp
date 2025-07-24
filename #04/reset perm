@@ -1,44 +1,22 @@
-# SharePoint Online Permission Reset Script
-# Single, reliable method using advanced CAML queries
-
-# Configuration
-$siteUrl = "https://yourtenant.sharepoint.com/sites/yoursite"
-$libraryName = "Documents"
-
-# Connect to SharePoint Online
-try {
-    Connect-PnPOnline -Url $siteUrl -Interactive
-    Write-Host "✓ Connected to SharePoint site: $siteUrl" -ForegroundColor Green
-} catch {
-    Write-Error "Failed to connect to SharePoint: $_"
-    exit 1
-}
-
 Write-Host "`n=== SharePoint Permission Reset Started ===" -ForegroundColor Cyan
 $startTime = Get-Date
 
-# Get all items with unique permissions using optimized CAML query
-Write-Host "Scanning for items with unique permissions..." -ForegroundColor Yellow
-
-$camlQuery = @"
-<View Scope='RecursiveAll'>
-    <Query>
-        <Where>
-            <Eq>
-                <FieldRef Name='HasUniqueRoleAssignments'/>
-                <Value Type='Boolean'>1</Value>
-            </Eq>
-        </Where>
-        <OrderBy>
-            <FieldRef Name='FSObjType' Ascending='FALSE'/>
-            <FieldRef Name='FileDirRef' Ascending='TRUE'/>
-        </OrderBy>
-    </Query>
-</View>
-"@
+# Method: Get ALL items first, then filter in PowerShell
+# This avoids CAML field type issues
+Write-Host "Retrieving all items from library..." -ForegroundColor Yellow
 
 try {
-    $itemsToReset = Get-PnPListItem -List $libraryName -Query $camlQuery -PageSize 2000
+    # Get all items without complex CAML filtering
+    $allItems = Get-PnPListItem -List $libraryName -PageSize 2000 -Fields "Id", "FileRef", "FileSystemObjectType", "HasUniqueRoleAssignments"
+    
+    Write-Host "Retrieved $($allItems.Count) total items" -ForegroundColor Cyan
+    
+    # Filter items with unique permissions in PowerShell
+    Write-Host "Filtering items with unique permissions..." -ForegroundColor Yellow
+    
+    $itemsToReset = $allItems | Where-Object { 
+        $_.FieldValues["HasUniqueRoleAssignments"] -eq $true 
+    }
     
     if ($itemsToReset.Count -eq 0) {
         Write-Host "No items with unique permissions found." -ForegroundColor Yellow
@@ -48,16 +26,19 @@ try {
     
     Write-Host "Found $($itemsToReset.Count) items with unique permissions" -ForegroundColor Cyan
     
-    # Process items (folders first due to ordering, then files)
+    # Sort items: Folders first (FileSystemObjectType = 1), then Files (FileSystemObjectType = 0)
+    $sortedItems = $itemsToReset | Sort-Object { $_.FieldValues["FileSystemObjectType"] } -Descending
+    
+    # Process items
     $resetCount = 0
     $errorCount = 0
     
-    foreach ($item in $itemsToReset) {
-        $itemType = if ($item.FileSystemObjectType -eq "File") { "File" } else { "Folder" }
+    foreach ($item in $sortedItems) {
+        $itemType = if ($item.FieldValues["FileSystemObjectType"] -eq 0) { "File" } else { "Folder" }
         $itemPath = $item.FieldValues["FileRef"]
         
         try {
-            Write-Host "[$($resetCount + 1)/$($itemsToReset.Count)] Resetting $itemType`: " -NoNewline -ForegroundColor Gray
+            Write-Host "[$($resetCount + $errorCount + 1)/$($sortedItems.Count)] Resetting $itemType`: " -NoNewline -ForegroundColor Gray
             Write-Host "$itemPath" -ForegroundColor White
             
             # Reset permissions to inherit from parent
@@ -69,30 +50,67 @@ try {
         } catch {
             $errorCount++
             Write-Host "  ✗ Failed: $($_.Exception.Message)" -ForegroundColor Red
-            
-            # Log detailed error for troubleshooting
-            $errorDetails = @{
-                ItemId = $item.Id
-                ItemPath = $itemPath
-                ItemType = $itemType
-                Error = $_.Exception.Message
-                Timestamp = Get-Date
-            }
-            
-            # Optionally write to error log file
-            # $errorDetails | ConvertTo-Json | Add-Content -Path ".\SharePointResetErrors.log"
         }
         
-        # Small delay to avoid throttling
-        if (($resetCount + $errorCount) % 50 -eq 0) {
-            Start-Sleep -Milliseconds 100
+        # Small delay every 25 items to avoid throttling
+        if (($resetCount + $errorCount) % 25 -eq 0) {
+            Write-Host "  Pausing briefly to avoid throttling..." -ForegroundColor Gray
+            Start-Sleep -Milliseconds 200
         }
     }
     
 } catch {
     Write-Error "Failed to retrieve items: $_"
-    Disconnect-PnPOnline
-    exit 1
+    
+    # Alternative method using basic query
+    Write-Host "`nTrying alternative method..." -ForegroundColor Yellow
+    
+    try {
+        # Very basic approach - get items in smaller batches
+        $batchSize = 500
+        $allItems = @()
+        $position = 0
+        
+        do {
+            Write-Host "Retrieving batch starting at position $position..." -ForegroundColor Gray
+            
+            $batch = Get-PnPListItem -List $libraryName -PageSize $batchSize
+            $allItems += $batch
+            $position += $batch.Count
+            
+        } while ($batch.Count -eq $batchSize)
+        
+        Write-Host "Retrieved $($allItems.Count) items using alternative method" -ForegroundColor Cyan
+        
+        # Filter and process items
+        $itemsToReset = $allItems | Where-Object { $_.HasUniqueRoleAssignments -eq $true }
+        
+        if ($itemsToReset.Count -gt 0) {
+            Write-Host "Found $($itemsToReset.Count) items to reset" -ForegroundColor Cyan
+            
+            $resetCount = 0
+            foreach ($item in $itemsToReset) {
+                try {
+                    $itemPath = if ($item.FieldValues["FileRef"]) { $item.FieldValues["FileRef"] } else { "Unknown path" }
+                    Write-Host "Resetting: $itemPath" -ForegroundColor White
+                    
+                    Set-PnPListItemPermission -List $libraryName -Identity $item.Id -InheritPermissions
+                    $resetCount++
+                    Write-Host "  ✓ Success" -ForegroundColor Green
+                    
+                } catch {
+                    Write-Warning "Failed to reset item ID $($item.Id): $($_.Exception.Message)"
+                }
+            }
+        } else {
+            Write-Host "No items with unique permissions found." -ForegroundColor Yellow
+        }
+        
+    } catch {
+        Write-Error "Alternative method also failed: $_"
+        Disconnect-PnPOnline
+        exit 1
+    }
 }
 
 # Summary
@@ -100,15 +118,16 @@ $endTime = Get-Date
 $duration = $endTime - $startTime
 
 Write-Host "`n=== Reset Complete ===" -ForegroundColor Cyan
-Write-Host "Total items processed: $($itemsToReset.Count)" -ForegroundColor White
-Write-Host "Successfully reset: $resetCount" -ForegroundColor Green
-Write-Host "Errors encountered: $errorCount" -ForegroundColor $(if ($errorCount -gt 0) { "Red" } else { "Green" })
+Write-Host "Successfully reset: $resetCount items" -ForegroundColor Green
+if ($errorCount -gt 0) {
+    Write-Host "Errors encountered: $errorCount" -ForegroundColor Red
+}
 Write-Host "Time taken: $($duration.ToString('mm\:ss'))" -ForegroundColor Gray
 
 if ($resetCount -gt 0) {
-    Write-Host "`n🎉 Permission reset completed successfully!" -ForegroundColor Green
-} elseif ($errorCount -gt 0) {
-    Write-Host "`n⚠️  Some errors occurred. Check the output above for details." -ForegroundColor Yellow
+    Write-Host "`n🎉 Permission reset completed!" -ForegroundColor Green
+} else {
+    Write-Host "`n⚠️  No permissions were reset." -ForegroundColor Yellow
 }
 
 # Disconnect
