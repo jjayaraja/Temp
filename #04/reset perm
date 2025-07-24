@@ -21,7 +21,8 @@ Write-Host "`n1️⃣ LIBRARY-LEVEL PERMISSIONS" -ForegroundColor Yellow
 Write-Host "=" * 40 -ForegroundColor Yellow
 
 try {
-    $libraryPermissions = Get-PnPListPermission -Identity $libraryName
+    $list = Get-PnPList -Identity $libraryName -Includes RoleAssignments
+    $libraryPermissions = Get-PnPProperty -ClientObject $list -Property RoleAssignments
     
     Write-Host "Library '$libraryName' permissions:" -ForegroundColor White
     $groupCount = 0
@@ -114,8 +115,8 @@ try {
                     Write-Host "  ⚠️  Has unique permissions:" -ForegroundColor Yellow
                     
                     $itemPermissions = Get-PnPListItemPermission -List $libraryName -Identity $item.Id
-                    foreach ($perm in $itemPermissions) {
-                        $principalType = switch ($perm.Member.PrincipalType) {
+                    foreach ($itemPerm in $itemPermissions) {
+                        $principalType = switch ($itemPerm.Member.PrincipalType) {
                             "User" { "👤" }
                             "SecurityGroup" { "🔒" }
                             "SharePointGroup" { "🏢" }
@@ -123,8 +124,8 @@ try {
                             default { "❓" }
                         }
                         
-                        $roles = ($perm.RoleDefinitionBindings | ForEach-Object { $_.Name }) -join ', '
-                        Write-Host "    $principalType $($perm.Member.Title) - $roles" -ForegroundColor Gray
+                        $roles = ($itemPerm.RoleDefinitionBindings | ForEach-Object { $_.Name }) -join ', '
+                        Write-Host "    $principalType $($itemPerm.Member.Title) - $roles" -ForegroundColor Gray
                     }
                 }
             } catch {
