@@ -1,182 +1,26 @@
-# Advanced SharePoint Online Permission Reset Methods
-# Using Latest PnP PowerShell Module Features
+# SharePoint Online Permission Reset Script
+# Single, reliable method using advanced CAML queries
 
 # Configuration
 $siteUrl = "https://yourtenant.sharepoint.com/sites/yoursite"
 $libraryName = "Documents"
 
 # Connect to SharePoint Online
-Connect-PnPOnline -Url $siteUrl -Interactive
-
-Write-Host "=== SharePoint Permission Reset Methods ===" -ForegroundColor Cyan
-
-# ==========================================
-# METHOD 1: Bulk Reset with Get-PnPListItemPermission
-# ==========================================
-function Method1-BulkResetWithPermissionCheck {
-    Write-Host "`n--- METHOD 1: Bulk Reset with Permission Check ---" -ForegroundColor Yellow
-    
-    # Get all items (files and folders) recursively
-    $allItems = Get-PnPListItem -List $libraryName -PageSize 2000 -ScriptBlock {
-        param($items)
-        Write-Host "Processing batch of $($items.Count) items..." -ForegroundColor Gray
-    }
-    
-    $resetCount = 0
-    foreach ($item in $allItems) {
-        try {
-            # Check if item has unique permissions
-            $permissions = Get-PnPListItemPermission -List $libraryName -Identity $item.Id -ErrorAction SilentlyContinue
-            
-            if ($permissions -and $item.HasUniqueRoleAssignments) {
-                $itemType = if ($item.FileSystemObjectType -eq "File") { "File" } else { "Folder" }
-                $itemPath = $item.FieldValues["FileRef"]
-                
-                Write-Host "Resetting $itemType`: $itemPath" -ForegroundColor Cyan
-                
-                # Reset to inherit permissions
-                Set-PnPListItemPermission -List $libraryName -Identity $item.Id -InheritPermissions
-                $resetCount++
-            }
-        } catch {
-            Write-Warning "Failed to process item ID $($item.Id): $($_.Exception.Message)"
-        }
-    }
-    
-    Write-Host "Method 1 completed. Reset $resetCount items." -ForegroundColor Green
+try {
+    Connect-PnPOnline -Url $siteUrl -Interactive
+    Write-Host "✓ Connected to SharePoint site: $siteUrl" -ForegroundColor Green
+} catch {
+    Write-Error "Failed to connect to SharePoint: $_"
+    exit 1
 }
 
-# ==========================================
-# METHOD 2: Using REST API Batch Operations
-# ==========================================
-function Method2-RestApiBatch {
-    Write-Host "`n--- METHOD 2: REST API Batch Operations ---" -ForegroundColor Yellow
-    
-    # Get items with unique permissions using REST API
-    $restQuery = @"
-_api/web/lists/getbytitle('$libraryName')/items?
-`$select=Id,FileRef,FileSystemObjectType,HasUniqueRoleAssignments&
-`$filter=HasUniqueRoleAssignments eq true&
-`$top=2000
-"@
-    
-    try {
-        $itemsWithUniquePerms = Invoke-PnPSPRestMethod -Url $restQuery -Method Get
-        
-        if ($itemsWithUniquePerms.value.Count -gt 0) {
-            Write-Host "Found $($itemsWithUniquePerms.value.Count) items with unique permissions" -ForegroundColor Cyan
-            
-            # Process in batches for better performance
-            $batchSize = 50
-            $batches = [Math]::Ceiling($itemsWithUniquePerms.value.Count / $batchSize)
-            
-            for ($i = 0; $i -lt $batches; $i++) {
-                $startIndex = $i * $batchSize
-                $endIndex = [Math]::Min($startIndex + $batchSize - 1, $itemsWithUniquePerms.value.Count - 1)
-                $batchItems = $itemsWithUniquePerms.value[$startIndex..$endIndex]
-                
-                Write-Host "Processing batch $($i + 1)/$batches ($($batchItems.Count) items)" -ForegroundColor Gray
-                
-                foreach ($item in $batchItems) {
-                    try {
-                        Set-PnPListItemPermission -List $libraryName -Identity $item.Id -InheritPermissions
-                        $itemType = if ($item.FileSystemObjectType -eq 0) { "File" } else { "Folder" }
-                        Write-Host "  Reset $itemType`: $($item.FileRef)" -ForegroundColor Green
-                    } catch {
-                        Write-Warning "  Failed to reset $($item.FileRef): $($_.Exception.Message)"
-                    }
-                }
-            }
-        } else {
-            Write-Host "No items with unique permissions found." -ForegroundColor Yellow
-        }
-    } catch {
-        Write-Error "REST API query failed: $_"
-    }
-}
+Write-Host "`n=== SharePoint Permission Reset Started ===" -ForegroundColor Cyan
+$startTime = Get-Date
 
-# ==========================================
-# METHOD 3: PowerShell Pipeline with Parallel Processing
-# ==========================================
-function Method3-ParallelProcessing {
-    Write-Host "`n--- METHOD 3: Parallel Processing ---" -ForegroundColor Yellow
-    
-    # Get all items with unique permissions
-    $itemsToReset = Get-PnPListItem -List $libraryName -Query @"
-<View Scope='RecursiveAll'>
-    <Query>
-        <Where>
-            <Eq>
-                <FieldRef Name='HasUniqueRoleAssignments'/>
-                <Value Type='Boolean'>1</Value>
-            </Eq>
-        </Where>
-    </Query>
-</View>
-"@ -PageSize 1000
-    
-    if ($itemsToReset.Count -gt 0) {
-        Write-Host "Processing $($itemsToReset.Count) items with parallel jobs..." -ForegroundColor Cyan
-        
-        # Process items in parallel (PowerShell 7+ feature)
-        $itemsToReset | ForEach-Object -Parallel {
-            $item = $_
-            $libraryName = $using:libraryName
-            
-            try {
-                Import-Module PnP.PowerShell -Force
-                $itemType = if ($item.FileSystemObjectType -eq "File") { "File" } else { "Folder" }
-                $itemPath = $item.FieldValues["FileRef"]
-                
-                # Note: This requires reconnection in each parallel job
-                # Alternative: Use the main thread for actual permission reset
-                Write-Output "Would reset $itemType`: $itemPath"
-                
-            } catch {
-                Write-Warning "Error in parallel job for item $($item.Id): $_"
-            }
-        } -ThrottleLimit 10
-        
-        Write-Host "Parallel processing identification completed." -ForegroundColor Green
-        Write-Host "Note: Actual permission reset should be done in main thread due to connection context." -ForegroundColor Yellow
-    }
-}
+# Get all items with unique permissions using optimized CAML query
+Write-Host "Scanning for items with unique permissions..." -ForegroundColor Yellow
 
-# ==========================================
-# METHOD 4: Advanced CAML Query with Folder Hierarchy
-# ==========================================
-function Method4-AdvancedCamlQuery {
-    Write-Host "`n--- METHOD 4: Advanced CAML with Folder Hierarchy ---" -ForegroundColor Yellow
-    
-    # Custom function to reset permissions by folder hierarchy
-    function Reset-PermissionsByHierarchy {
-        param($FolderPath = "")
-        
-        $camlQuery = if ($FolderPath) {
-            @"
-<View Scope='Recursive'>
-    <Query>
-        <Where>
-            <And>
-                <BeginsWith>
-                    <FieldRef Name='FileDirRef'/>
-                    <Value Type='Text'>$FolderPath</Value>
-                </BeginsWith>
-                <Eq>
-                    <FieldRef Name='HasUniqueRoleAssignments'/>
-                    <Value Type='Boolean'>1</Value>
-                </Eq>
-            </And>
-        </Where>
-        <OrderBy>
-            <FieldRef Name='FileDirRef' Ascending='TRUE'/>
-            <FieldRef Name='FileLeafRef' Ascending='TRUE'/>
-        </OrderBy>
-    </Query>
-</View>
-"@
-        } else {
-            @"
+$camlQuery = @"
 <View Scope='RecursiveAll'>
     <Query>
         <Where>
@@ -192,114 +36,81 @@ function Method4-AdvancedCamlQuery {
     </Query>
 </View>
 "@
-        }
-        
-        $items = Get-PnPListItem -List $libraryName -Query $camlQuery
-        
-        # Process folders first, then files (due to ordering)
-        foreach ($item in $items) {
-            $itemType = if ($item.FileSystemObjectType -eq "File") { "File" } else { "Folder" }
-            $itemPath = $item.FieldValues["FileRef"]
-            
-            try {
-                Write-Host "Resetting $itemType`: $itemPath" -ForegroundColor Cyan
-                Set-PnPListItemPermission -List $libraryName -Identity $item.Id -InheritPermissions
-                Write-Host "  ✓ Success" -ForegroundColor Green
-            } catch {
-                Write-Warning "  ✗ Failed: $($_.Exception.Message)"
-            }
-        }
-        
-        return $items.Count
+
+try {
+    $itemsToReset = Get-PnPListItem -List $libraryName -Query $camlQuery -PageSize 2000
+    
+    if ($itemsToReset.Count -eq 0) {
+        Write-Host "No items with unique permissions found." -ForegroundColor Yellow
+        Disconnect-PnPOnline
+        exit 0
     }
     
-    $totalReset = Reset-PermissionsByHierarchy
-    Write-Host "Method 4 completed. Reset $totalReset items." -ForegroundColor Green
-}
-
-# ==========================================
-# METHOD 5: Using PnP Template Export/Import Pattern
-# ==========================================
-function Method5-TemplateBasedReset {
-    Write-Host "`n--- METHOD 5: Template-Based Permission Reset ---" -ForegroundColor Yellow
+    Write-Host "Found $($itemsToReset.Count) items with unique permissions" -ForegroundColor Cyan
     
-    try {
-        # Get the list template to understand default permissions
-        $list = Get-PnPList -Identity $libraryName -Includes RoleAssignments
+    # Process items (folders first due to ordering, then files)
+    $resetCount = 0
+    $errorCount = 0
+    
+    foreach ($item in $itemsToReset) {
+        $itemType = if ($item.FileSystemObjectType -eq "File") { "File" } else { "Folder" }
+        $itemPath = $item.FieldValues["FileRef"]
         
-        # Export current permissions for backup
-        Write-Host "Backing up current permissions..." -ForegroundColor Gray
-        $backupData = @()
-        
-        $itemsWithPerms = Get-PnPListItem -List $libraryName -Query @"
-<View Scope='RecursiveAll'>
-    <Query>
-        <Where>
-            <Eq>
-                <FieldRef Name='HasUniqueRoleAssignments'/>
-                <Value Type='Boolean'>1</Value>
-            </Eq>
-        </Where>
-    </Query>
-</View>
-"@
-        
-        foreach ($item in $itemsWithPerms) {
-            $permissions = Get-PnPListItemPermission -List $libraryName -Identity $item.Id
-            $backupData += @{
-                ItemId = $item.Id
-                ItemPath = $item.FieldValues["FileRef"]
-                Permissions = $permissions
-            }
+        try {
+            Write-Host "[$($resetCount + 1)/$($itemsToReset.Count)] Resetting $itemType`: " -NoNewline -ForegroundColor Gray
+            Write-Host "$itemPath" -ForegroundColor White
             
-            # Reset permissions
+            # Reset permissions to inherit from parent
             Set-PnPListItemPermission -List $libraryName -Identity $item.Id -InheritPermissions
+            
+            $resetCount++
+            Write-Host "  ✓ Success" -ForegroundColor Green
+            
+        } catch {
+            $errorCount++
+            Write-Host "  ✗ Failed: $($_.Exception.Message)" -ForegroundColor Red
+            
+            # Log detailed error for troubleshooting
+            $errorDetails = @{
+                ItemId = $item.Id
+                ItemPath = $itemPath
+                ItemType = $itemType
+                Error = $_.Exception.Message
+                Timestamp = Get-Date
+            }
+            
+            # Optionally write to error log file
+            # $errorDetails | ConvertTo-Json | Add-Content -Path ".\SharePointResetErrors.log"
         }
         
-        # Save backup to file
-        $backupPath = ".\SharePointPermissionsBackup_$(Get-Date -Format 'yyyyMMdd_HHmmss').json"
-        $backupData | ConvertTo-Json -Depth 10 | Out-File -FilePath $backupPath -Encoding UTF8
-        
-        Write-Host "Method 5 completed. Reset $($itemsWithPerms.Count) items." -ForegroundColor Green
-        Write-Host "Backup saved to: $backupPath" -ForegroundColor Cyan
-        
-    } catch {
-        Write-Error "Template-based reset failed: $_"
+        # Small delay to avoid throttling
+        if (($resetCount + $errorCount) % 50 -eq 0) {
+            Start-Sleep -Milliseconds 100
+        }
     }
+    
+} catch {
+    Write-Error "Failed to retrieve items: $_"
+    Disconnect-PnPOnline
+    exit 1
 }
 
-# ==========================================
-# EXECUTION MENU
-# ==========================================
-Write-Host "`nChoose a method to execute:" -ForegroundColor White
-Write-Host "1. Bulk Reset with Permission Check"
-Write-Host "2. REST API Batch Operations"
-Write-Host "3. Parallel Processing (Identification)"
-Write-Host "4. Advanced CAML Query"
-Write-Host "5. Template-Based with Backup"
-Write-Host "A. Run All Methods (for comparison)"
+# Summary
+$endTime = Get-Date
+$duration = $endTime - $startTime
 
-$choice = Read-Host "Enter your choice (1-5 or A)"
+Write-Host "`n=== Reset Complete ===" -ForegroundColor Cyan
+Write-Host "Total items processed: $($itemsToReset.Count)" -ForegroundColor White
+Write-Host "Successfully reset: $resetCount" -ForegroundColor Green
+Write-Host "Errors encountered: $errorCount" -ForegroundColor $(if ($errorCount -gt 0) { "Red" } else { "Green" })
+Write-Host "Time taken: $($duration.ToString('mm\:ss'))" -ForegroundColor Gray
 
-switch ($choice.ToUpper()) {
-    "1" { Method1-BulkResetWithPermissionCheck }
-    "2" { Method2-RestApiBatch }
-    "3" { Method3-ParallelProcessing }
-    "4" { Method4-AdvancedCamlQuery }
-    "5" { Method5-TemplateBasedReset }
-    "A" { 
-        Method1-BulkResetWithPermissionCheck
-        Method2-RestApiBatch
-        Method3-ParallelProcessing
-        Method4-AdvancedCamlQuery
-        Method5-TemplateBasedReset
-    }
-    default { 
-        Write-Host "Running default method (Method 4)..." -ForegroundColor Yellow
-        Method4-AdvancedCamlQuery 
-    }
+if ($resetCount -gt 0) {
+    Write-Host "`n🎉 Permission reset completed successfully!" -ForegroundColor Green
+} elseif ($errorCount -gt 0) {
+    Write-Host "`n⚠️  Some errors occurred. Check the output above for details." -ForegroundColor Yellow
 }
 
-# Cleanup
+# Disconnect
 Disconnect-PnPOnline
-Write-Host "`nScript completed successfully!" -ForegroundColor Green
+Write-Host "`nDisconnected from SharePoint." -ForegroundColor Gray
