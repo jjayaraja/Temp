@@ -1,24 +1,25 @@
-# Connect to your SharePoint site
+# Connect to your SharePoint Online site
 Connect-PnPOnline -Url "https://yourtenant.sharepoint.com/sites/yoursite" -Interactive
 
-# Set your document library name
-$libraryName = "Documents"
+# Your document library name
+$listName = "Documents"
 
-# Get all items recursively from the library
-$items = Get-PnPListItem -List $libraryName -PageSize 2000 -Fields "FileRef", "FileSystemObjectType"
+# Get all items from the list (files + folders)
+$items = Get-PnPListItem -List $listName -PageSize 2000 -Fields "FileRef", "FileSystemObjectType"
 
 foreach ($item in $items) {
-    $fileRef = $item.FieldValues["FileRef"]
     $itemId = $item.Id
+    $fileRef = $item.FieldValues["FileRef"]
 
     try {
-        # Reset permission inheritance (removes unique permissions)
+        # Reset inheritance using this method
         Invoke-PnPQuery
-        Set-PnPListItem -List $libraryName -Identity $itemId -ClearUniqueRoleAssignments
+        Invoke-PnPProperty -Object $item -Property RoleAssignments
+        $item.ResetRoleInheritance()
 
-        Write-Host "✔ Permissions inherited for: $fileRef" -ForegroundColor Green
+        Write-Host "✔ Inheritance reset: $fileRef" -ForegroundColor Green
     }
     catch {
-        Write-Warning "❌ Failed to set inheritance for $fileRef: $_"
+        Write-Warning "❌ Failed to reset permissions for $fileRef: $_"
     }
 }
