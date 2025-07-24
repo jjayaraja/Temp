@@ -1,170 +1,18 @@
-# SharePoint Permission Verification Script
-# Confirms all items are properly using library groups
-
-# Configuration
-$siteUrl = "https://yourtenant.sharepoint.com/sites/yoursite"
-$libraryName = "Documents"
-
-# Connect to SharePoint Online
-try {
-    Connect-PnPOnline -Url $siteUrl -Interactive
-    Write-Host "✅ Connected to SharePoint site: $siteUrl" -ForegroundColor Green
-} catch {
-    Write-Error "Failed to connect to SharePoint: $_"
-    exit 1
-}
-
-Write-Host "`n=== SharePoint Permission Verification ===" -ForegroundColor Cyan
-
-# Show library-level permissions (your expected 4 groups)
-Write-Host "`n1️⃣ LIBRARY-LEVEL PERMISSIONS" -ForegroundColor Yellow
-Write-Host "=" * 40 -ForegroundColor Yellow
-
-try {
-    $list = Get-PnPList -Identity $libraryName -Includes RoleAssignments
-    $libraryPermissions = Get-PnPProperty -ClientObject $list -Property RoleAssignments
-    
-    Write-Host "Library '$libraryName' permissions:" -ForegroundColor White
-    $groupCount = 0
-    $libraryGroups = @()
-    
-    foreach ($perm in $libraryPermissions) {
-        $principalType = switch ($perm.Member.PrincipalType) {
-            "User" { "👤 User" }
-            "SecurityGroup" { "🔒 Security Group" }
-            "SharePointGroup" { "🏢 SharePoint Group" }  
-            "DistributionList" { "📧 Distribution List" }
-            default { "❓ $($perm.Member.PrincipalType)" }
-        }
-        
-        $roles = ($perm.RoleDefinitionBindings | ForEach-Object { $_.Name }) -join ', '
-        Write-Host "  $principalType`: $($perm.Member.Title)" -ForegroundColor Cyan
-        Write-Host "    Permissions: $roles" -ForegroundColor Gray
-        
-        if ($perm.Member.PrincipalType -in @("SecurityGroup", "SharePointGroup", "DistributionList")) {
-            $groupCount++
-            $libraryGroups += $perm.Member.Title
-        }
+Connect-PnPOnline -Url $SiteURL -Credentials (Get-Credential)
+ 
+#Get all list items in batches
+$ListItems = Get-PnPListItem -List $ListName -PageSize 500
+ 
+#Iterate through each list item
+ForEach($ListItem in $ListItems)
+{
+    #Check if the Item has unique permissions
+    $HasUniquePermissions = Get-PnPProperty -ClientObject $ListItem -Property "HasUniqueRoleAssignments"
+    If($HasUniquePermissions)
+    {        
+        $Msg = "Deleting Unique Permissions on {0} '{1}' at {2} " -f $ListItem.FileSystemObjectType,$ListItem.FieldValues["FileLeafRef"],$ListItem.FieldValues["FileRef"]
+        Write-host $Msg
+        #Delete unique permissions on the list item
+        Set-PnPListItemPermission -List $ListName -Identity $ListItem.ID -InheritPermissions
     }
-    
-    Write-Host "`nTotal Groups: $groupCount" -ForegroundColor $(if ($groupCount -eq 4) { "Green" } else { "Yellow" })
-    
-    if ($groupCount -ne 4) {
-        Write-Host "⚠️  You mentioned expecting 4 groups, but found $groupCount" -ForegroundColor Yellow
-    }
-    
-} catch {
-    Write-Error "Could not retrieve library permissions: $_"
-    Disconnect-PnPOnline
-    exit 1
 }
-
-# Check inheritance status of all items
-Write-Host "`n2️⃣ INHERITANCE STATUS CHECK" -ForegroundColor Yellow
-Write-Host "=" * 40 -ForegroundColor Yellow
-
-try {
-    $allItems = Get-PnPListItem -List $libraryName -PageSize 1000 -Fields "Id", "FileRef", "FileSystemObjectType", "HasUniqueRoleAssignments"
-    
-    $totalItems = $allItems.Count
-    $inheritingItems = ($allItems | Where-Object { $_.FieldValues["HasUniqueRoleAssignments"] -eq $false }).Count
-    $uniqueItems = ($allItems | Where-Object { $_.FieldValues["HasUniqueRoleAssignments"] -eq $true }).Count
-    $folders = ($allItems | Where-Object { $_.FieldValues["FileSystemObjectType"] -eq 1 }).Count
-    $files = ($allItems | Where-Object { $_.FieldValues["FileSystemObjectType"] -eq 0 }).Count
-    
-    Write-Host "📊 Item Summary:" -ForegroundColor White
-    Write-Host "  Total items: $totalItems" -ForegroundColor Cyan
-    Write-Host "  Folders: $folders" -ForegroundColor Cyan
-    Write-Host "  Files: $files" -ForegroundColor Cyan
-    Write-Host "  ✅ Inheriting from library: $inheritingItems" -ForegroundColor Green
-    Write-Host "  ⚠️  With unique permissions: $uniqueItems" -ForegroundColor $(if ($uniqueItems -eq 0) { "Green" } else { "Red" })
-    
-    if ($uniqueItems -eq 0) {
-        Write-Host "`n🎉 PERFECT! All items inherit from library groups!" -ForegroundColor Green
-    }
-    
-} catch {
-    Write-Error "Could not analyze items: $_"
-}
-
-# Sample a few items to verify they actually have the right permissions
-Write-Host "`n3️⃣ SAMPLE PERMISSION VERIFICATION" -ForegroundColor Yellow
-Write-Host "=" * 40 -ForegroundColor Yellow
-
-try {
-    # Get a sample of items (first 5 folders and first 5 files)
-    $sampleFolders = $allItems | Where-Object { $_.FieldValues["FileSystemObjectType"] -eq 1 } | Select-Object -First 3
-    $sampleFiles = $allItems | Where-Object { $_.FieldValues["FileSystemObjectType"] -eq 0 } | Select-Object -First 3
-    
-    $sampleItems = @($sampleFolders) + @($sampleFiles)
-    
-    if ($sampleItems.Count -gt 0) {
-        Write-Host "Checking permissions on sample items..." -ForegroundColor White
-        
-        foreach ($item in $sampleItems) {
-            $itemType = if ($item.FieldValues["FileSystemObjectType"] -eq 0) { "📄 File" } else { "📁 Folder" }
-            $itemPath = $item.FieldValues["FileRef"]
-            $shortPath = if ($itemPath.Length -gt 60) { "..." + $itemPath.Substring($itemPath.Length - 57) } else { $itemPath }
-            
-            Write-Host "`n$itemType`: $shortPath" -ForegroundColor Cyan
-            
-            try {
-                if ($item.FieldValues["HasUniqueRoleAssignments"] -eq $false) {
-                    Write-Host "  ✅ Inherits from library (using your $groupCount groups)" -ForegroundColor Green
-                } else {
-                    Write-Host "  ⚠️  Has unique permissions:" -ForegroundColor Yellow
-                    
-                    $itemPermissions = Get-PnPListItemPermission -List $libraryName -Identity $item.Id
-                    foreach ($itemPerm in $itemPermissions) {
-                        $principalType = switch ($itemPerm.Member.PrincipalType) {
-                            "User" { "👤" }
-                            "SecurityGroup" { "🔒" }
-                            "SharePointGroup" { "🏢" }
-                            "DistributionList" { "📧" }
-                            default { "❓" }
-                        }
-                        
-                        $roles = ($itemPerm.RoleDefinitionBindings | ForEach-Object { $_.Name }) -join ', '
-                        Write-Host "    $principalType $($itemPerm.Member.Title) - $roles" -ForegroundColor Gray
-                    }
-                }
-            } catch {
-                Write-Host "  ❌ Could not check permissions: $($_.Exception.Message)" -ForegroundColor Red
-            }
-        }
-    }
-    
-} catch {
-    Write-Warning "Could not verify sample permissions: $_"
-}
-
-# Summary and recommendations
-Write-Host "`n4️⃣ SUMMARY & RECOMMENDATIONS" -ForegroundColor Yellow
-Write-Host "=" * 40 -ForegroundColor Yellow
-
-if ($uniqueItems -eq 0) {
-    Write-Host "✅ EXCELLENT!" -ForegroundColor Green
-    Write-Host "All $totalItems items are properly inheriting from your library's $groupCount groups." -ForegroundColor Green
-    Write-Host "Your permission structure is consistent and well-organized." -ForegroundColor Green
-    
-    if ($groupCount -eq 4) {
-        Write-Host "✅ You have exactly the 4 groups you expected." -ForegroundColor Green
-    }
-} else {
-    Write-Host "⚠️  ATTENTION NEEDED" -ForegroundColor Yellow
-    Write-Host "$uniqueItems items have unique permissions that override your library groups." -ForegroundColor Yellow
-    Write-Host "Run the permission reset script if you want ALL items to use only your $groupCount library groups." -ForegroundColor Yellow
-}
-
-Write-Host "`n📋 Next Steps:" -ForegroundColor White
-if ($uniqueItems -eq 0) {
-    Write-Host "  • No action needed - permissions are properly configured ✅" -ForegroundColor Green
-    Write-Host "  • New items will automatically inherit your $groupCount groups ✅" -ForegroundColor Green
-} else {
-    Write-Host "  • Consider running permission reset script to enforce library groups" -ForegroundColor Yellow
-    Write-Host "  • Review items with unique permissions to see if they're intentional" -ForegroundColor Yellow
-}
-
-# Disconnect
-Disconnect-PnPOnline
-Write-Host "`nDisconnected from SharePoint." -ForegroundColor Gray
