@@ -1,0 +1,44 @@
+# Connect to your SharePoint Online site
+Connect-PnPOnline -Url "https://tenant.sharepoint.com/sites/yoursite" -Interactive
+
+# Define variables
+$library = "lib"
+$groupRead = "groupA"  # Group that should get restricted root-level access
+$groupContribute = "groupA"  # Same group gets Contribute inside
+
+# Get all root folders (A–Z) in the library
+$rootFolders = Get-PnPListItem -List $library -PageSize 1000 | Where-Object {
+    $_.FieldValues.FileSystemObjectType -eq "Folder" -and
+    $_.FieldValues.FileLeafRef -match '^[A-Z]$'
+}
+
+foreach ($folder in $rootFolders) {
+    $folderName = $folder.FieldValues.FileLeafRef
+    $folderUrl = "$library/$folderName"
+
+    Write-Host "`n📁 Processing root folder: $folderName"
+
+    # Break inheritance on root folder
+    Set-PnPListItemPermission -List $library -Identity $folder.Id -BreakRoleInheritance -CopyRoleAssignments:$false -ClearSubscopes:$true
+
+    # Apply custom "Root Move Only" permission to groupRead (root folder)
+    Set-PnPListItemPermission -List $library -Identity $folder.Id -Group $groupRead -AddRole "Root Move Only"
+
+    # Get child items (folders and files inside root folder)
+    $children = Get-PnPListItem -List $library -PageSize 500 -FolderServerRelativeUrl $folder.FieldValues["FileRef"]
+
+    foreach ($child in $children) {
+        $childName = $child.FieldValues.FileLeafRef
+        $childUrl = $child.FieldValues["FileRef"]
+
+        Write-Host "  └─ 📂 Child: $childName"
+
+        # Break inheritance on each child item (if needed)
+        Set-PnPListItemPermission -List $library -Identity $child.Id -BreakRoleInheritance -CopyRoleAssignments:$false -ClearSubscopes:$true
+
+        # Apply "Contribute" permission to groupContribute
+        Set-PnPListItemPermission -List $library -Identity $child.Id -Group $groupContribute -AddRole "Contribute"
+    }
+}
+
+Write-Host "`n✅ Permission configuration completed."
