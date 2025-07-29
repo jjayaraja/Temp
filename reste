@@ -1,5 +1,5 @@
-# Reset SharePoint Online Document Library Permissions to Inherit from Parent
-# This script resets permissions for ALL files and folders in the entire library that have broken inheritance
+# Reset SharePoint Online Document Library Permissions - Threshold Safe Version
+# This version directly targets items with unique permissions to avoid threshold issues
 
 # Parameters - UPDATE THESE VALUES
 $SiteUrl = "https://yourtenant.sharepoint.com/sites/yoursite"
@@ -19,113 +19,91 @@ catch {
 function Reset-ItemPermissions {
     param(
         [Parameter(Mandatory = $true)]
-        [Microsoft.SharePoint.Client.ListItem]$Item,
-        [Parameter(Mandatory = $true)]
-        [string]$ItemType
+        [Microsoft.SharePoint.Client.ListItem]$Item
     )
     
     try {
-        # Check if item has unique permissions (broken inheritance)
-        if ($Item.HasUniqueRoleAssignments) {
-            Write-Host "Resetting permissions for $ItemType`: $($Item["FileLeafRef"])" -ForegroundColor Yellow
-            
-            # Reset role inheritance - this will remove unique permissions and inherit from parent
-            $Item.ResetRoleInheritance()
-            $Item.Context.ExecuteQuery()
-            
-            Write-Host "✓ Successfully reset permissions for $ItemType`: $($Item["FileLeafRef"])" -ForegroundColor Green
-            return $true
-        }
-        else {
-            return $false
-        }
+        $itemType = if ($Item["FSObjType"] -eq 1) { "Folder" } else { "File" }
+        $itemName = $Item["FileLeafRef"]
+        $itemPath = $Item["FileRef"]
+        
+        Write-Host "Resetting permissions for $itemType`: $itemName" -ForegroundColor Yellow
+        Write-Host "  Path: $itemPath" -ForegroundColor Gray
+        
+        # Reset role inheritance
+        $Item.ResetRoleInheritance()
+        $Item.Context.ExecuteQuery()
+        
+        Write-Host "✓ Successfully reset permissions for $itemType`: $itemName" -ForegroundColor Green
+        return $true
     }
     catch {
-        Write-Error "Failed to reset permissions for $ItemType $($Item["FileLeafRef"]): $($_.Exception.Message)"
+        Write-Error "Failed to reset permissions for $($Item["FileLeafRef"]): $($_.Exception.Message)"
         return $false
-    }
-}
-
-# Function to process folders recursively
-function Process-Folder {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$FolderPath,
-        [Parameter(Mandatory = $false)]
-        [int]$Level = 0
-    )
-    
-    $indent = "  " * $Level
-    Write-Host "$indent Processing folder: $FolderPath" -ForegroundColor Cyan
-    
-    try {
-        # Get folder items
-        $folderItems = Get-PnPListItem -List $LibraryName -FolderServerRelativeUrl $FolderPath
-        
-        $resetCount = 0
-        
-        foreach ($item in $folderItems) {
-            $fileType = $item["FSObjType"]
-            
-            if ($fileType -eq 1) {
-                # It's a folder
-                $folderName = $item["FileLeafRef"]
-                $subFolderPath = "$FolderPath/$folderName"
-                
-                # Reset folder permissions
-                if (Reset-ItemPermissions -Item $item -ItemType "Folder") {
-                    $resetCount++
-                }
-                
-                # Process subfolder recursively
-                $subResetCount = Process-Folder -FolderPath $subFolderPath -Level ($Level + 1)
-                $resetCount += $subResetCount
-            }
-            else {
-                # It's a file
-                if (Reset-ItemPermissions -Item $item -ItemType "File") {
-                    $resetCount++
-                }
-            }
-        }
-        
-        return $resetCount
-    }
-    catch {
-        Write-Error "$indent Failed to process folder $FolderPath`: $($_.Exception.Message)"
-        return 0
     }
 }
 
 # Main execution
 try {
-    Write-Host "`n=== Starting Permission Reset for Entire Library ===" -ForegroundColor Magenta
+    Write-Host "`n=== Starting Targeted Permission Reset ===" -ForegroundColor Magenta
     Write-Host "Site: $SiteUrl" -ForegroundColor White  
     Write-Host "Library: $LibraryName" -ForegroundColor White
-    Write-Host "====================================================`n" -ForegroundColor Magenta
-    
-    # Get the document library
-    $library = Get-PnPList -Identity $LibraryName
-    if (-not $library) {
-        throw "Document library '$LibraryName' not found"
-    }
-    
-    # Get library root folder server relative URL
-    $libraryRootPath = $library.RootFolder.ServerRelativeUrl
+    Write-Host "Method: Direct query for items with unique permissions" -ForegroundColor White
+    Write-Host "===============================================`n" -ForegroundColor Magenta
     
     $startTime = Get-Date
     
-    # Start processing from root folder - this processes the ENTIRE library
-    $totalResetCount = Process-Folder -FolderPath $libraryRootPath
+    # Use CAML query to find only items with unique permissions
+    Write-Host "Searching for items with unique permissions..." -ForegroundColor Cyan
     
-    $endTime = Get-Date
-    $duration = $endTime - $startTime
+    $camlQuery = @"
+<View Scope='RecursiveAll'>
+    <Query>
+        <Where>
+            <Eq>
+                <FieldRef Name='HasUniqueRoleAssignments'/>
+                <Value Type='Boolean'>1</Value>
+            </Eq>
+        </Where>
+    </Query>
+    <RowLimit>4000</RowLimit>
+</View>
+"@
     
-    Write-Host "`n=== Permission Reset Complete ===" -ForegroundColor Magenta
-    Write-Host "Total items with permissions reset: $totalResetCount" -ForegroundColor Green
-    Write-Host "Processing time: $($duration.ToString('mm\:ss'))" -ForegroundColor White
-    Write-Host "All items now inherit permissions from the library" -ForegroundColor Green
-    Write-Host "=================================" -ForegroundColor Magenta
+    $itemsWithUniquePerms = Get-PnPListItem -List $LibraryName -Query $camlQuery
+    
+    Write-Host "Found $($itemsWithUniquePerms.Count) items with unique permissions`n" -ForegroundColor White
+    
+    if ($itemsWithUniquePerms.Count -eq 0) {
+        Write-Host "No items found with unique permissions. All items are already inheriting from library." -ForegroundColor Green
+    }
+    else {
+        $successCount = 0
+        $totalCount = $itemsWithUniquePerms.Count
+        
+        for ($i = 0; $i -lt $totalCount; $i++) {
+            $item = $itemsWithUniquePerms[$i]
+            
+            Write-Host "[$($i + 1)/$totalCount] " -NoNewline -ForegroundColor Blue
+            
+            if (Reset-ItemPermissions -Item $item) {
+                $successCount++
+            }
+            
+            # Small delay to avoid throttling
+            Start-Sleep -Milliseconds 100
+        }
+        
+        $endTime = Get-Date
+        $duration = $endTime - $startTime
+        
+        Write-Host "`n=== Permission Reset Complete ===" -ForegroundColor Magenta
+        Write-Host "Items found with unique permissions: $totalCount" -ForegroundColor White
+        Write-Host "Items successfully reset: $successCount" -ForegroundColor Green
+        Write-Host "Processing time: $($duration.ToString('mm\:ss'))" -ForegroundColor White
+        Write-Host "All processed items now inherit permissions from the library" -ForegroundColor Green
+        Write-Host "=================================" -ForegroundColor Magenta
+    }
 }
 catch {
     Write-Error "Script execution failed: $($_.Exception.Message)"
@@ -137,5 +115,4 @@ finally {
 }
 
 Write-Host "`n--- Process Complete ---" -ForegroundColor Blue
-Write-Host "The entire '$LibraryName' library has been processed" -ForegroundColor Blue
-Write-Host "All files and folders now inherit permissions from the library level" -ForegroundColor Blue
+Write-Host "Targeted reset complete - only items with unique permissions were processed" -ForegroundColor Blue
