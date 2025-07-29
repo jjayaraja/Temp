@@ -1,0 +1,52 @@
+# Parameters
+$SiteURL = "https://yourtenant.sharepoint.com/sites/YourSite"
+$Library = "Documents"  # Change to your library name
+$RootFolderUrl = "/sites/YourSite/$Library"
+
+# Connect
+Connect-PnPOnline -Url $SiteURL -Interactive
+
+# Recursive function
+function Reset-FolderPermissions($FolderUrl) {
+    # Get folder with metadata
+    $folder = Get-PnPFolder -Url $FolderUrl `
+        -Includes ListItemAllFields.HasUniqueRoleAssignments, `
+                  ListItemAllFields.ParentList, `
+                  ListItemAllFields.ID
+
+    $folderItem = $folder.ListItemAllFields
+
+    # Reset folder permission if it has unique assignments
+    if ($folderItem.HasUniqueRoleAssignments) {
+        Set-PnPListItemPermission `
+            -List $folderItem.ParentList `
+            -Identity $folderItem.ID `
+            -InheritPermissions
+        Write-Host "Folder reset: $FolderUrl"
+    }
+
+    # Process items (both files and nested)
+    $items = Get-PnPListItem -List $Library `
+        -FolderServerRelativeUrl $FolderUrl -PageSize 500
+
+    foreach ($i in $items) {
+        Get-PnPProperty -ClientObject $i -Property "HasUniqueRoleAssignments" | Out-Null
+        if ($i.HasUniqueRoleAssignments) {
+            Set-PnPListItemPermission -List $Library `
+                -Identity $i.ID -InheritPermissions
+            Write-Host "File reset: $($i.FieldValues['FileRef'])"
+        }
+    }
+
+    # Recurse into subfolders
+    $subfolders = Get-PnPFolderItem `
+        -FolderSiteRelativeUrl $FolderUrl -ItemType Folder
+
+    foreach ($sf in $subfolders) {
+        $newUrl = $FolderUrl.TrimEnd("/") + "/" + $sf.Name
+        Reset-FolderPermissions $newUrl
+    }
+}
+
+# Start recursion at root library
+Reset-FolderPermissions $RootFolderUrl
