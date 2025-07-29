@@ -1,0 +1,238 @@
+# Reset Only Items with Broken Inheritance
+# This script uses multiple methods to accurately identify items that don't inherit permissions
+
+# Parameters
+$SiteUrl = "https://yourtenant.sharepoint.com/sites/yoursite"
+$LibraryName = "Documents"
+
+# Connect
+Connect-PnPOnline -Url $SiteUrl -Interactive
+Write-Host "Connected to SharePoint" -ForegroundColor Green
+
+function Test-BrokenInheritance {
+    param($Item)
+    
+    try {
+        # Method 1: Check HasUniqueRoleAssignments property
+        $Item.Context.Load($Item)
+        $Item.Context.ExecuteQuery()
+        
+        if ($Item.HasUniqueRoleAssignments -eq $true) {
+            return $true
+        }
+        
+        # Method 2: Load and count role assignments
+        $Item.Context.Load($Item.RoleAssignments)
+        $Item.Context.ExecuteQuery()
+        
+        # If item has direct role assignments, it's not inheriting
+        if ($Item.RoleAssignments.Count -gt 0) {
+            # Double-check by examining the role assignments
+            foreach ($roleAssignment in $Item.RoleAssignments) {
+                $Item.Context.Load($roleAssignment.Member)
+                $Item.Context.ExecuteQuery()
+                
+                # If we can load role assignments, it likely has unique permissions
+                return $true
+            }
+        }
+        
+        return $false
+    }
+    catch {
+        # If we can't determine, assume it's inheriting properly
+        return $false
+    }
+}
+
+function Get-ItemsWithBrokenInheritance {
+    param($LibraryName)
+    
+    Write-Host "Scanning library for items with broken inheritance..." -ForegroundColor Cyan
+    
+    $brokenItems = @()
+    $totalChecked = 0
+    
+    # Method 1: Try CAML query first
+    try {
+        Write-Host "  Trying CAML query method..." -ForegroundColor Gray
+        
+        $camlQuery = @"
+<View Scope='RecursiveAll'>
+    <Query>
+        <Where>
+            <Eq>
+                <FieldRef Name='HasUniqueRoleAssignments'/>
+                <Value Type='Boolean'>1</Value>
+            </Eq>
+        </Where>
+    </Query>
+    <RowLimit>5000</RowLimit>
+</View>
+"@
+        
+        $camlResults = Get-PnPListItem -List $LibraryName -Query $camlQuery
+        
+        if ($camlResults.Count -gt 0) {
+            Write-Host "  Found $($camlResults.Count) items via CAML query" -ForegroundColor Green
+            return $camlResults
+        }
+        else {
+            Write-Host "  CAML query returned 0 items" -ForegroundColor Yellow
+        }
+    }
+    catch {
+        Write-Host "  CAML query failed: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+    
+    # Method 2: Manual check using REST API
+    try {
+        Write-Host "  Trying REST API method..." -ForegroundColor Gray
+        
+        $restUrl = "/_api/web/lists/getbytitle('$LibraryName')/items?`$select=Id,FileLeafRef,FileRef,HasUniqueRoleAssignments&`$filter=HasUniqueRoleAssignments eq true&`$top=5000"
+        $restResults = Invoke-PnPSPRestMethod -Url $restUrl -Method Get
+        
+        if ($restResults.value.Count -gt 0) {
+            Write-Host "  Found $($restResults.value.Count) items via REST API" -ForegroundColor Green
+            
+            # Convert REST results to list items
+            $restItems = @()
+            foreach ($restItem in $restResults.value) {
+                $listItem = Get-PnPListItem -List $LibraryName -Id $restItem.Id
+                $restItems += $listItem
+            }
+            return $restItems
+        }
+        else {
+            Write-Host "  REST API returned 0 items" -ForegroundColor Yellow
+        }
+    }
+    catch {
+        Write-Host "  REST API failed: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+    
+    # Method 3: Manual scan (slower but most reliable)
+    Write-Host "  Falling back to manual scan method..." -ForegroundColor Gray
+    Write-Host "  This may take longer but will be more accurate" -ForegroundColor Gray
+    
+    # Get all items in batches
+    $pageSize = 1000
+    $position = $null
+    
+    do {
+        try {
+            if ($position) {
+                $items = Get-PnPListItem -List $LibraryName -PageSize $pageSize -ScriptBlock { $args[0].Position = $position }
+            }
+            else {
+                $items = Get-PnPListItem -List $LibraryName -PageSize $pageSize
+            }
+            
+            foreach ($item in $items) {
+                $totalChecked++
+                
+                if ($totalChecked % 100 -eq 0) {
+                    Write-Host "    Checked $totalChecked items..." -ForegroundColor DarkGray
+                }
+                
+                if (Test-BrokenInheritance -Item $item) {
+                    $brokenItems += $item
+                    
+                    $itemName = "Unknown"
+                    try { $itemName = $item["FileLeafRef"] } catch { }
+                    Write-Host "    Found broken inheritance: $itemName" -ForegroundColor Yellow
+                }
+            }
+            
+            if ($items.Count -eq $pageSize) {
+                $position = $items[-1].Id
+            }
+            else {
+                $position = $null
+            }
+        }
+        catch {
+            Write-Host "    Error in batch: $($_.Exception.Message)" -ForegroundColor Red
+            break
+        }
+    } while ($position -and $items.Count -eq $pageSize)
+    
+    Write-Host "  Manual scan complete: checked $totalChecked items" -ForegroundColor Green
+    return $brokenItems
+}
+
+try {
+    Write-Host "`n=== Finding Items with Broken Inheritance ===" -ForegroundColor Magenta
+    Write-Host "Library: $LibraryName" -ForegroundColor White
+    
+    # Find items with broken inheritance
+    $brokenItems = Get-ItemsWithBrokenInheritance -LibraryName $LibraryName
+    
+    Write-Host "`nFound $($brokenItems.Count) items with broken inheritance" -ForegroundColor White
+    
+    if ($brokenItems.Count -eq 0) {
+        Write-Host "✓ No items found with broken inheritance!" -ForegroundColor Green
+        Write-Host "All items in the library are properly inheriting permissions." -ForegroundColor Green
+    }
+    else {
+        Write-Host "`n=== Resetting Broken Inheritance Items ===" -ForegroundColor Magenta
+        
+        $resetCount = 0
+        $errorCount = 0
+        
+        for ($i = 0; $i -lt $brokenItems.Count; $i++) {
+            $item = $brokenItems[$i]
+            
+            # Get item details
+            $itemName = "Item ID: $($item.Id)"
+            $itemPath = ""
+            try {
+                $itemName = $item["FileLeafRef"]
+                $itemPath = $item["FileRef"]
+            }
+            catch { }
+            
+            Write-Host "[$($i + 1)/$($brokenItems.Count)] $itemName" -ForegroundColor Blue
+            Write-Host "  Path: $itemPath" -ForegroundColor Gray
+            
+            try {
+                # Reset inheritance
+                $item.ResetRoleInheritance()
+                $item.Context.ExecuteQuery()
+                
+                Write-Host "  ✓ Successfully reset to inherit from library" -ForegroundColor Green
+                $resetCount++
+            }
+            catch {
+                Write-Host "  ✗ Error: $($_.Exception.Message)" -ForegroundColor Red
+                $errorCount++
+            }
+            
+            # Small delay to avoid throttling
+            Start-Sleep -Milliseconds 300
+        }
+        
+        Write-Host "`n=== Reset Complete ===" -ForegroundColor Magenta
+        Write-Host "Items with broken inheritance found: $($brokenItems.Count)" -ForegroundColor White
+        Write-Host "Items successfully reset: $resetCount" -ForegroundColor Green
+        Write-Host "Items with errors: $errorCount" -ForegroundColor Red
+        Write-Host "=========================" -ForegroundColor Magenta
+        
+        if ($resetCount -gt 0) {
+            Write-Host "`n✓ SUCCESS: $resetCount items now inherit permissions from the library" -ForegroundColor Green
+        }
+    }
+}
+catch {
+    Write-Error "Script failed: $($_.Exception.Message)"
+}
+finally {
+    Disconnect-PnPOnline
+    Write-Host "`nDisconnected from SharePoint" -ForegroundColor Yellow
+}
+
+Write-Host "`n--- How to Verify Results ---" -ForegroundColor Blue
+Write-Host "1. Go to SharePoint → Library → Select any file/folder" -ForegroundColor Blue
+Write-Host "2. Click 'Manage Access' in the toolbar" -ForegroundColor Blue
+Write-Host "3. You should see 'Stop inheriting permissions' (means it's inheriting ✓)" -ForegroundColor Blue
+Write-Host "4. If you see 'Inherit permissions', it still has unique permissions" -ForegroundColor Blue
