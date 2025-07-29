@@ -1,118 +1,61 @@
-# Reset SharePoint Online Document Library Permissions - Threshold Safe Version
-# This version directly targets items with unique permissions to avoid threshold issues
-
-# Parameters - UPDATE THESE VALUES
+# Simple SharePoint Permission Reset - Basic approach
+# Parameters
 $SiteUrl = "https://yourtenant.sharepoint.com/sites/yoursite"
-$LibraryName = "Documents"  # Change to your document library name
+$LibraryName = "Documents"
 
-# Connect to SharePoint Online
+# Connect
+Connect-PnPOnline -Url $SiteUrl -Interactive
+Write-Host "Connected to SharePoint" -ForegroundColor Green
+
 try {
-    Connect-PnPOnline -Url $SiteUrl -Interactive
-    Write-Host "Connected to SharePoint site: $SiteUrl" -ForegroundColor Green
-}
-catch {
-    Write-Error "Failed to connect to SharePoint: $($_.Exception.Message)"
-    exit
-}
-
-# Function to reset permissions for a specific item
-function Reset-ItemPermissions {
-    param(
-        [Parameter(Mandatory = $true)]
-        [Microsoft.SharePoint.Client.ListItem]$Item
-    )
+    Write-Host "Getting all items from library..." -ForegroundColor Cyan
     
-    try {
-        $itemType = if ($Item["FSObjType"] -eq 1) { "Folder" } else { "File" }
-        $itemName = $Item["FileLeafRef"]
-        $itemPath = $Item["FileRef"]
-        
-        Write-Host "Resetting permissions for $itemType`: $itemName" -ForegroundColor Yellow
-        Write-Host "  Path: $itemPath" -ForegroundColor Gray
-        
-        # Reset role inheritance
-        $Item.ResetRoleInheritance()
-        $Item.Context.ExecuteQuery()
-        
-        Write-Host "✓ Successfully reset permissions for $itemType`: $itemName" -ForegroundColor Green
-        return $true
+    # Get all items in smaller batches
+    $allItems = Get-PnPListItem -List $LibraryName -PageSize 1000
+    
+    Write-Host "Found $($allItems.Count) total items" -ForegroundColor White
+    
+    # Filter items with unique permissions
+    $itemsToReset = @()
+    foreach ($item in $allItems) {
+        if ($item.HasUniqueRoleAssignments) {
+            $itemsToReset += $item
+        }
     }
-    catch {
-        Write-Error "Failed to reset permissions for $($Item["FileLeafRef"]): $($_.Exception.Message)"
-        return $false
-    }
-}
-
-# Main execution
-try {
-    Write-Host "`n=== Starting Targeted Permission Reset ===" -ForegroundColor Magenta
-    Write-Host "Site: $SiteUrl" -ForegroundColor White  
-    Write-Host "Library: $LibraryName" -ForegroundColor White
-    Write-Host "Method: Direct query for items with unique permissions" -ForegroundColor White
-    Write-Host "===============================================`n" -ForegroundColor Magenta
     
-    $startTime = Get-Date
+    Write-Host "Found $($itemsToReset.Count) items with unique permissions" -ForegroundColor Yellow
     
-    # Use CAML query to find only items with unique permissions
-    Write-Host "Searching for items with unique permissions..." -ForegroundColor Cyan
-    
-    $camlQuery = @"
-<View Scope='RecursiveAll'>
-    <Query>
-        <Where>
-            <Eq>
-                <FieldRef Name='HasUniqueRoleAssignments'/>
-                <Value Type='Boolean'>1</Value>
-            </Eq>
-        </Where>
-    </Query>
-    <RowLimit>4000</RowLimit>
-</View>
-"@
-    
-    $itemsWithUniquePerms = Get-PnPListItem -List $LibraryName -Query $camlQuery
-    
-    Write-Host "Found $($itemsWithUniquePerms.Count) items with unique permissions`n" -ForegroundColor White
-    
-    if ($itemsWithUniquePerms.Count -eq 0) {
-        Write-Host "No items found with unique permissions. All items are already inheriting from library." -ForegroundColor Green
+    if ($itemsToReset.Count -eq 0) {
+        Write-Host "No items need permission reset!" -ForegroundColor Green
     }
     else {
-        $successCount = 0
-        $totalCount = $itemsWithUniquePerms.Count
+        $resetCount = 0
         
-        for ($i = 0; $i -lt $totalCount; $i++) {
-            $item = $itemsWithUniquePerms[$i]
-            
-            Write-Host "[$($i + 1)/$totalCount] " -NoNewline -ForegroundColor Blue
-            
-            if (Reset-ItemPermissions -Item $item) {
-                $successCount++
+        foreach ($item in $itemsToReset) {
+            try {
+                $resetCount++
+                Write-Host "[$resetCount/$($itemsToReset.Count)] Resetting item ID: $($item.Id)" -ForegroundColor Blue
+                
+                # Reset permissions
+                $item.ResetRoleInheritance()
+                $item.Context.ExecuteQuery()
+                
+                Write-Host "✓ Success" -ForegroundColor Green
+                
+                # Small delay
+                Start-Sleep -Milliseconds 300
             }
-            
-            # Small delay to avoid throttling
-            Start-Sleep -Milliseconds 100
+            catch {
+                Write-Host "✗ Failed: $($_.Exception.Message)" -ForegroundColor Red
+            }
         }
         
-        $endTime = Get-Date
-        $duration = $endTime - $startTime
-        
-        Write-Host "`n=== Permission Reset Complete ===" -ForegroundColor Magenta
-        Write-Host "Items found with unique permissions: $totalCount" -ForegroundColor White
-        Write-Host "Items successfully reset: $successCount" -ForegroundColor Green
-        Write-Host "Processing time: $($duration.ToString('mm\:ss'))" -ForegroundColor White
-        Write-Host "All processed items now inherit permissions from the library" -ForegroundColor Green
-        Write-Host "=================================" -ForegroundColor Magenta
+        Write-Host "`nCompleted! $resetCount items processed" -ForegroundColor Magenta
     }
 }
 catch {
-    Write-Error "Script execution failed: $($_.Exception.Message)"
+    Write-Error "Error: $($_.Exception.Message)"
 }
 finally {
-    # Disconnect from SharePoint
     Disconnect-PnPOnline
-    Write-Host "`nDisconnected from SharePoint" -ForegroundColor Yellow
 }
-
-Write-Host "`n--- Process Complete ---" -ForegroundColor Blue
-Write-Host "Targeted reset complete - only items with unique permissions were processed" -ForegroundColor Blue
