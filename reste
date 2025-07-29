@@ -5,46 +5,13 @@
 $SiteUrl = "https://yourtenant.sharepoint.com/sites/yoursite"
 $LibraryName = "Documents"  # Change to your document library name
 
-# Configuration options
-$WhatIf = $false          # Set to $true to preview changes without applying them
-$LogToFile = $true        # Set to $true to save results to a log file
-$LogPath = "C:\Temp\PermissionReset_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
-
-# Initialize logging
-if ($LogToFile) {
-    $logDir = Split-Path $LogPath -Parent
-    if (-not (Test-Path $logDir)) {
-        New-Item -Path $logDir -ItemType Directory -Force | Out-Null
-    }
-    "Permission Reset Log - Started: $(Get-Date)" | Out-File -FilePath $LogPath -Encoding UTF8
-    "Site: $SiteUrl" | Out-File -FilePath $LogPath -Append -Encoding UTF8
-    "Library: $LibraryName" | Out-File -FilePath $LogPath -Append -Encoding UTF8
-    "WhatIf Mode: $WhatIf" | Out-File -FilePath $LogPath -Append -Encoding UTF8
-    "=" * 50 | Out-File -FilePath $LogPath -Append -Encoding UTF8
-}
-
-# Function to write to both console and log
-function Write-LogMessage {
-    param(
-        [string]$Message,
-        [string]$Color = "White",
-        [string]$LogLevel = "INFO"
-    )
-    
-    Write-Host $Message -ForegroundColor $Color
-    
-    if ($LogToFile) {
-        "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') [$LogLevel] $Message" | Out-File -FilePath $LogPath -Append -Encoding UTF8
-    }
-}
-
 # Connect to SharePoint Online
 try {
     Connect-PnPOnline -Url $SiteUrl -Interactive
-    Write-LogMessage "Connected to SharePoint site: $SiteUrl" -Color Green
+    Write-Host "Connected to SharePoint site: $SiteUrl" -ForegroundColor Green
 }
 catch {
-    Write-LogMessage "Failed to connect to SharePoint: $($_.Exception.Message)" -Color Red -LogLevel "ERROR"
+    Write-Error "Failed to connect to SharePoint: $($_.Exception.Message)"
     exit
 }
 
@@ -60,34 +27,21 @@ function Reset-ItemPermissions {
     try {
         # Check if item has unique permissions (broken inheritance)
         if ($Item.HasUniqueRoleAssignments) {
-            $itemName = $Item["FileLeafRef"]
-            $itemPath = $Item["FileRef"]
+            Write-Host "Resetting permissions for $ItemType`: $($Item["FileLeafRef"])" -ForegroundColor Yellow
             
-            if ($WhatIf) {
-                Write-LogMessage "[WHATIF] Would reset permissions for $ItemType`: $itemName" -Color Yellow -LogLevel "WHATIF"
-                Write-LogMessage "         Path: $itemPath" -Color Gray -LogLevel "WHATIF"
-                return $true
-            }
-            else {
-                Write-LogMessage "Processing $ItemType`: $itemName - Resetting permissions..." -Color Yellow -LogLevel "PROCESS"
-                
-                # Reset role inheritance - this will remove unique permissions and inherit from parent
-                $Item.ResetRoleInheritance()
-                $Item.Context.ExecuteQuery()
-                
-                Write-LogMessage "✓ Successfully reset permissions for $ItemType`: $itemName" -Color Green -LogLevel "SUCCESS"
-                Write-LogMessage "  Path: $itemPath" -Color Gray -LogLevel "SUCCESS"
-                return $true
-            }
+            # Reset role inheritance - this will remove unique permissions and inherit from parent
+            $Item.ResetRoleInheritance()
+            $Item.Context.ExecuteQuery()
+            
+            Write-Host "✓ Successfully reset permissions for $ItemType`: $($Item["FileLeafRef"])" -ForegroundColor Green
+            return $true
         }
         else {
-            Write-LogMessage "- $ItemType`: $($Item["FileLeafRef"]) - Already inheriting permissions" -Color Gray -LogLevel "SKIP"
             return $false
         }
     }
     catch {
-        $errorMsg = "Failed to reset permissions for $ItemType $($Item["FileLeafRef"]): $($_.Exception.Message)"
-        Write-LogMessage $errorMsg -Color Red -LogLevel "ERROR"
+        Write-Error "Failed to reset permissions for $ItemType $($Item["FileLeafRef"]): $($_.Exception.Message)"
         return $false
     }
 }
@@ -102,30 +56,16 @@ function Process-Folder {
     )
     
     $indent = "  " * $Level
-    Write-LogMessage "$indent Processing folder: $FolderPath" -Color Cyan -LogLevel "FOLDER"
+    Write-Host "$indent Processing folder: $FolderPath" -ForegroundColor Cyan
     
     try {
-        # Get folder items with progress indication
+        # Get folder items
         $folderItems = Get-PnPListItem -List $LibraryName -FolderServerRelativeUrl $FolderPath
         
-        if ($folderItems.Count -eq 0) {
-            Write-LogMessage "$indent  (Empty folder)" -Color Gray -LogLevel "FOLDER"
-            return 0
-        }
-        
-        Write-LogMessage "$indent  Found $($folderItems.Count) items" -Color White -LogLevel "FOLDER"
-        
         $resetCount = 0
-        $itemCounter = 0
         
         foreach ($item in $folderItems) {
-            $itemCounter++
             $fileType = $item["FSObjType"]
-            
-            # Show progress for large folders
-            if ($folderItems.Count -gt 10 -and $itemCounter % 10 -eq 0) {
-                Write-LogMessage "$indent  Progress: $itemCounter/$($folderItems.Count) items processed" -Color Blue -LogLevel "PROGRESS"
-            }
             
             if ($fileType -eq 1) {
                 # It's a folder
@@ -149,22 +89,20 @@ function Process-Folder {
             }
         }
         
-        Write-LogMessage "$indent  Completed folder: $resetCount permissions reset" -Color Green -LogLevel "FOLDER"
         return $resetCount
     }
     catch {
-        $errorMsg = "$indent Failed to process folder $FolderPath`: $($_.Exception.Message)"
-        Write-LogMessage $errorMsg -Color Red -LogLevel "ERROR"
+        Write-Error "$indent Failed to process folder $FolderPath`: $($_.Exception.Message)"
         return 0
     }
 }
 
 # Main execution
 try {
-    Write-Host "`n=== Starting Permission Reset Process ===" -ForegroundColor Magenta
-    Write-Host "Site: $SiteUrl" -ForegroundColor White
+    Write-Host "`n=== Starting Permission Reset for Entire Library ===" -ForegroundColor Magenta
+    Write-Host "Site: $SiteUrl" -ForegroundColor White  
     Write-Host "Library: $LibraryName" -ForegroundColor White
-    Write-Host "=========================================`n" -ForegroundColor Magenta
+    Write-Host "====================================================`n" -ForegroundColor Magenta
     
     # Get the document library
     $library = Get-PnPList -Identity $LibraryName
@@ -175,11 +113,18 @@ try {
     # Get library root folder server relative URL
     $libraryRootPath = $library.RootFolder.ServerRelativeUrl
     
-    # Start processing from root folder
+    $startTime = Get-Date
+    
+    # Start processing from root folder - this processes the ENTIRE library
     $totalResetCount = Process-Folder -FolderPath $libraryRootPath
+    
+    $endTime = Get-Date
+    $duration = $endTime - $startTime
     
     Write-Host "`n=== Permission Reset Complete ===" -ForegroundColor Magenta
     Write-Host "Total items with permissions reset: $totalResetCount" -ForegroundColor Green
+    Write-Host "Processing time: $($duration.ToString('mm\:ss'))" -ForegroundColor White
+    Write-Host "All items now inherit permissions from the library" -ForegroundColor Green
     Write-Host "=================================" -ForegroundColor Magenta
 }
 catch {
@@ -191,11 +136,6 @@ finally {
     Write-Host "`nDisconnected from SharePoint" -ForegroundColor Yellow
 }
 
-# Optional: Generate summary report
-Write-Host "`n--- Summary ---" -ForegroundColor Blue
-Write-Host "This script has:" -ForegroundColor Blue
-Write-Host "• Connected to your SharePoint site" -ForegroundColor Blue
-Write-Host "• Scanned all files and folders in the specified library" -ForegroundColor Blue
-Write-Host "• Reset permissions for items with broken inheritance" -ForegroundColor Blue
-Write-Host "• Restored inheritance from the parent library" -ForegroundColor Blue
-Write-Host "• Processed folders recursively" -ForegroundColor Blue
+Write-Host "`n--- Process Complete ---" -ForegroundColor Blue
+Write-Host "The entire '$LibraryName' library has been processed" -ForegroundColor Blue
+Write-Host "All files and folders now inherit permissions from the library level" -ForegroundColor Blue
