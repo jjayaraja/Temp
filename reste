@@ -1,4 +1,6 @@
-# Simple SharePoint Permission Reset - Basic approach
+# Force Reset ALL Item Permissions to Inherit
+# This script attempts to reset inheritance on ALL items without checking current state
+
 # Parameters
 $SiteUrl = "https://yourtenant.sharepoint.com/sites/yoursite"
 $LibraryName = "Documents"
@@ -8,54 +10,84 @@ Connect-PnPOnline -Url $SiteUrl -Interactive
 Write-Host "Connected to SharePoint" -ForegroundColor Green
 
 try {
-    Write-Host "Getting all items from library..." -ForegroundColor Cyan
+    Write-Host "`n=== Force Reset ALL Permissions ===" -ForegroundColor Magenta
+    Write-Host "WARNING: This will attempt to reset inheritance on ALL items" -ForegroundColor Yellow
+    Write-Host "Library: $LibraryName" -ForegroundColor White
     
-    # Get all items in smaller batches
-    $allItems = Get-PnPListItem -List $LibraryName -PageSize 1000
+    # Get all items
+    Write-Host "`nGetting all items..." -ForegroundColor Cyan
+    $allItems = Get-PnPListItem -List $LibraryName -PageSize 2000
+    Write-Host "Found $($allItems.Count) items to process" -ForegroundColor White
     
-    Write-Host "Found $($allItems.Count) total items" -ForegroundColor White
+    $processedCount = 0
+    $resetCount = 0
+    $errorCount = 0
     
-    # Filter items with unique permissions
-    $itemsToReset = @()
     foreach ($item in $allItems) {
-        if ($item.HasUniqueRoleAssignments) {
-            $itemsToReset += $item
+        $processedCount++
+        
+        # Get item name
+        $itemName = "Item ID: $($item.Id)"
+        try {
+            $displayName = $item["FileLeafRef"]
+            if (![string]::IsNullOrEmpty($displayName)) {
+                $itemName = $displayName
+            }
+        }
+        catch { }
+        
+        Write-Host "[$processedCount/$($allItems.Count)] $itemName" -ForegroundColor Blue -NoNewline
+        
+        try {
+            # Always attempt to reset inheritance
+            $item.ResetRoleInheritance()
+            $item.Context.ExecuteQuery()
+            
+            Write-Host " → Reset ✓" -ForegroundColor Green
+            $resetCount++
+        }
+        catch {
+            if ($_.Exception.Message -like "*does not have unique permissions*" -or 
+                $_.Exception.Message -like "*already inheriting*") {
+                Write-Host " → Already inheriting" -ForegroundColor Gray
+            }
+            else {
+                Write-Host " → Error: $($_.Exception.Message)" -ForegroundColor Red
+                $errorCount++
+            }
+        }
+        
+        # Progress update and throttling
+        if ($processedCount % 25 -eq 0) {
+            Write-Host "`n  Progress: $processedCount/$($allItems.Count) | Reset: $resetCount | Errors: $errorCount" -ForegroundColor Cyan
+            Start-Sleep -Milliseconds 1000
+        }
+        else {
+            Start-Sleep -Milliseconds 200
         }
     }
     
-    Write-Host "Found $($itemsToReset.Count) items with unique permissions" -ForegroundColor Yellow
+    Write-Host "`n=== Final Results ===" -ForegroundColor Magenta
+    Write-Host "Total items processed: $processedCount" -ForegroundColor White
+    Write-Host "Items with permissions reset: $resetCount" -ForegroundColor Green
+    Write-Host "Items that had errors: $errorCount" -ForegroundColor Red
+    Write-Host "Items already inheriting: $($processedCount - $resetCount - $errorCount)" -ForegroundColor Gray
+    Write-Host "=============================" -ForegroundColor Magenta
     
-    if ($itemsToReset.Count -eq 0) {
-        Write-Host "No items need permission reset!" -ForegroundColor Green
+    if ($resetCount -gt 0) {
+        Write-Host "`n✓ SUCCESS: $resetCount items now inherit permissions from the library" -ForegroundColor Green
     }
     else {
-        $resetCount = 0
-        
-        foreach ($item in $itemsToReset) {
-            try {
-                $resetCount++
-                Write-Host "[$resetCount/$($itemsToReset.Count)] Resetting item ID: $($item.Id)" -ForegroundColor Blue
-                
-                # Reset permissions
-                $item.ResetRoleInheritance()
-                $item.Context.ExecuteQuery()
-                
-                Write-Host "✓ Success" -ForegroundColor Green
-                
-                # Small delay
-                Start-Sleep -Milliseconds 300
-            }
-            catch {
-                Write-Host "✗ Failed: $($_.Exception.Message)" -ForegroundColor Red
-            }
-        }
-        
-        Write-Host "`nCompleted! $resetCount items processed" -ForegroundColor Magenta
+        Write-Host "`nNo items were reset. This could mean:" -ForegroundColor Yellow
+        Write-Host "- All items are already inheriting correctly" -ForegroundColor Yellow
+        Write-Host "- You may not have sufficient permissions" -ForegroundColor Yellow
+        Write-Host "- The library structure may be different than expected" -ForegroundColor Yellow
     }
 }
 catch {
-    Write-Error "Error: $($_.Exception.Message)"
+    Write-Error "Script failed: $($_.Exception.Message)"
 }
 finally {
     Disconnect-PnPOnline
+    Write-Host "`nDisconnected from SharePoint" -ForegroundColor Yellow
 }
